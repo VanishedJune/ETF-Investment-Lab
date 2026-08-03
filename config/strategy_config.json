@@ -1,0 +1,35 @@
+{
+  "version": "1.0",
+  "weights": {
+    "valuation": 0.25,
+    "trend": 0.25,
+    "momentum": 0.15,
+    "volume": 0.1,
+    "volatility": 0.1,
+    "risk": 0.15
+  },
+  "thresholds": {
+    "valuation_low_percentile": 0.3,
+    "valuation_high_percentile": 0.7,
+    "momentum_rsi_low": 35,
+    "momentum_rsi_high": 70,
+    "volume_ratio_low": 0.8,
+    "volume_ratio_high": 1.2,
+    "volatility_high": 0.35,
+    "drawdown_pause": -0.2,
+    "increase_score": 0.35,
+    "reduce_score": -0.2,
+    "sell_partial_score": -0.45,
+    "pause_score": -0.75
+  },
+  "multipliers": {
+    "increase": 1.3,
+    "normal": 1.0,
+    "reduce": 0.75,
+    "pause": 0.5,
+    "hold": 1.0,
+    "sell_partial": 0.7
+  },
+  "maximum_sell_ratio": 0.3,
+  "minimum_holding_ratio": 0.2
+}

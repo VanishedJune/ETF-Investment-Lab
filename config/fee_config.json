@@ -1,0 +1,9 @@
+{
+  "buy_commission_rate": 0.00025,
+  "sell_commission_rate": 0.00025,
+  "minimum_commission": 5,
+  "minimum_commission_enabled": true,
+  "etf_stamp_duty_rate": 0,
+  "transfer_fee_rate": 0,
+  "other_fee_rate": 0
+}

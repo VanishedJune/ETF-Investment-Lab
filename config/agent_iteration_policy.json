@@ -1,0 +1,28 @@
+{
+  "schema_version": 2,
+  "model_line": "weekly-v2",
+  "execution_mode": "local_web_backend",
+  "trigger": "data_analysis_button",
+  "uses_agent": false,
+  "uses_ai": false,
+  "instruments": ["399006", "NDX"],
+  "analysis_years": 10,
+  "warmup_weeks": 60,
+  "timeframe": "weekly",
+  "iterations_per_unique_complete_week": 1,
+  "same_week_idempotent": true,
+  "seed": 20260730,
+  "label_horizons_weeks": [1, 4, 13],
+  "historical_evaluation_position_percent": 50,
+  "fund_etf_ratios": ["7:3", "6:4", "5:5", "4:6", "3:7"],
+  "position_step_percent": 5,
+  "max_advice_batches": 4,
+  "max_weight_change_per_iteration": 2,
+  "legacy_v1": {
+    "status": "read_only_audit",
+    "paths": [
+      "data/model_iterations/399006",
+      "data/model_iterations/NDX"
+    ]
+  }
+}

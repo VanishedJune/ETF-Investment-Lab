@@ -1,0 +1,7 @@
+{
+  "app_name": "ETF Investment Research Lab",
+  "locale": "zh-CN",
+  "timezone": "Asia/Shanghai",
+  "database_path": "data/investment_lab.db",
+  "data_mode": "local_only"
+}
