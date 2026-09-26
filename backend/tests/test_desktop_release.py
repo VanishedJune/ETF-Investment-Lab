@@ -238,24 +238,14 @@ def test_webview_pid_reuse_is_stale_but_bad_marker_fails_closed(tmp_path: Path) 
     ) == "unknown"
 
 
-def test_packaged_release_build_uses_consistent_snapshot_and_post_copy_audits() -> None:
+def test_packaged_release_build_stages_program_without_private_database() -> None:
     project_root = Path(__file__).resolve().parents[2]
     build_script = (project_root / "scripts" / "build-desktop.ps1").read_text(
         encoding="utf-8"
     )
-    assert "snapshot_sqlite_database" in build_script
-    assert "Copy-Item -LiteralPath \"data\\investment_lab.db\"" not in build_script
-    assert "if (-not (Test-Path -LiteralPath $DistExecutable)" in build_script
-    assert "PRAGMA integrity_check" in build_script
-    assert "Path(r'$SourceDatabase'), Path(r'$ReleaseDatabase')" in build_script
-    assert "Copy-Item -LiteralPath $DistExecutable -Destination $RootExecutable" in build_script
-    assert "$rootHash -ne $releaseHash" in build_script
-    assert 'Remove-Item -LiteralPath $BuildStaging -Recurse -Force' in build_script
-    assert 'Remove-Item -LiteralPath $DistStaging -Recurse -Force' in build_script
-    assert build_script.index("$rootHash -ne $releaseHash") < build_script.index(
-        'Remove-Item -LiteralPath $DistStaging -Recurse -Force'
-    )
-    assert "V3.7 data-only desktop build created." in build_script
-    assert build_script.index("snapshot_sqlite_database") < build_script.index(
-        'Set-Content -LiteralPath $RootMarker'
-    )
+    assert "param([switch]$StageOnly)" in build_script
+    assert "if ($StageOnly)" in build_script
+    assert "foreach ($Name in @('InvestmentLab.exe', '_internal'))" in build_script
+    assert "No database, configuration, model, or ledger was replaced." in build_script
+    assert "data\\investment_lab.db" not in build_script
+    assert "deepseek.local.json" not in build_script
