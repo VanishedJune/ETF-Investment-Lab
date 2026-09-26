@@ -8,6 +8,7 @@ import sys
 import threading
 
 import pytest
+from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy import event, func, select
 from sqlalchemy.orm import Session
@@ -29,6 +30,7 @@ from backend.app.schemas.market import (
 )
 from backend.app.services.csv_import import CsvImportService
 from backend.app.services.market_data import MarketDataService
+from backend.app.services.market_calendar import ExchangeCalendarProvider
 from backend.app.services.providers import (
     AkShareEtfResearchProvider,
     AkShareIndexProvider,
@@ -251,6 +253,121 @@ def test_etf_research_provider_falls_back_to_sina_and_tencent_without_unit_drift
     assert any("Sina public history used" in warning for warning in result.warnings)
 
 
+def test_direct_sina_etf_fallback_parses_plain_jsonp_without_native_runtime(
+    monkeypatch,
+) -> None:
+    body = b'''/* redirect guard */\nvar _etf_sz159941=([{"day":"2026-08-10","open":"1.700","high":"1.704","low":"1.683","close":"1.684","volume":"588611661"}]);'''
+    requests: list[object] = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self) -> bytes:
+            return body
+
+    def opener(request, *, timeout):  # type: ignore[no-untyped-def]
+        requests.append(request)
+        assert timeout == 30
+        return Response()
+
+    monkeypatch.setattr("backend.app.services.providers.urlopen", opener)
+
+    rows = AkShareEtfResearchProvider._download_sina_unadjusted(symbol="sz159941")
+
+    assert rows == [
+        {
+            "day": "2026-08-10",
+            "date": "2026-08-10",
+            "open": "1.700",
+            "high": "1.704",
+            "low": "1.683",
+            "close": "1.684",
+            "volume": "588611661",
+        }
+    ]
+    assert "CN_MarketDataService.getKLineData" in requests[0].full_url
+    assert "symbol=sz159941" in requests[0].full_url
+
+
+def test_default_sina_fallback_does_not_access_akshare_native_decoder(
+    monkeypatch,
+) -> None:
+    def unavailable_primary(**_kwargs):  # type: ignore[no-untyped-def]
+        raise ConnectionError("EastMoney unavailable")
+
+    class AkShareWithoutSina:
+        fund_etf_hist_em = staticmethod(unavailable_primary)
+
+        def __getattr__(self, name: str):
+            if name == "fund_etf_hist_sina":
+                raise AssertionError("native AkShare Sina decoder must not be accessed")
+            raise AttributeError(name)
+
+    monkeypatch.setitem(sys.modules, "akshare", AkShareWithoutSina())
+    monkeypatch.setattr(
+        AkShareEtfResearchProvider,
+        "_download_sina_unadjusted",
+        staticmethod(
+            lambda **_kwargs: [
+                {
+                    "date": "2026-08-10",
+                    "open": "1.700",
+                    "high": "1.704",
+                    "low": "1.683",
+                    "close": "1.684",
+                    "volume": "588611661",
+                }
+            ]
+        ),
+    )
+
+    result = AkShareEtfResearchProvider(
+        tencent_loader=lambda *_args: [
+            ["2026-08-10", "1.700", "1.684", "1.704", "1.683", "5886116"]
+        ]
+    ).fetch("159941", date(2026, 8, 8))
+
+    assert result.status is ProviderStatus.SUCCESS
+    assert result.source == "AKSHARE_ETF_SINA"
+    assert result.cutoff_date == date(2026, 8, 10)
+    assert result.records[0].close_price == Decimal("1.684")
+    assert result.records[0].adjusted_close_price == Decimal("1.684")
+
+
+def test_etf_research_provider_treats_empty_eastmoney_result_as_fallback_condition() -> None:
+    primary_calls: list[str] = []
+
+    def empty_primary(**kwargs):  # type: ignore[no-untyped-def]
+        primary_calls.append(str(kwargs["adjust"]))
+        return []
+
+    result = AkShareEtfResearchProvider(
+        history_loader=empty_primary,
+        sina_loader=lambda **_kwargs: [
+            {
+                "date": "2026-08-07",
+                "open": "1.500",
+                "high": "1.530",
+                "low": "1.490",
+                "close": "1.520",
+                "volume": "1200000",
+                "amount": "1820000",
+            }
+        ],
+        tencent_loader=lambda *_args: [],
+    ).fetch("159941")
+
+    assert result.status is ProviderStatus.SUCCESS
+    assert result.source == "AKSHARE_ETF_SINA"
+    assert result.cutoff_date == date(2026, 8, 7)
+    assert primary_calls == ["", "qfq"]
+    assert any("returned no usable rows" in warning for warning in result.warnings)
+
+
 def test_etf_research_provider_replaces_only_invalid_sina_zero_volume_from_crosscheck() -> None:
     def unavailable_primary(**_kwargs):  # type: ignore[no-untyped-def]
         raise ConnectionError("EastMoney unavailable")
@@ -313,6 +430,104 @@ def test_direct_china_index_uses_akshare_sina_history_when_primary_endpoint_is_u
     assert result.source == "AKSHARE_INDEX_SINA"
     assert result.records[0].close_price == Decimal("1678")
     assert fallback_calls == [{"symbol": "sh000688"}]
+
+
+def test_direct_china_index_uses_fresh_tencent_history_when_primary_is_unavailable() -> None:
+    def failed_primary(**_kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("EastMoney unavailable")
+
+    def tencent(**kwargs):  # type: ignore[no-untyped-def]
+        assert kwargs == {
+            "symbol": "sz399006",
+            "start_date": "20260801",
+            "end_date": "20260807",
+        }
+        return [
+            {
+                "date": "2026-08-05",
+                "open": "3372.08",
+                "high": "3584.06",
+                "low": "3372.04",
+                "close": "3535.14",
+                "amount": "226495353",
+            },
+            {
+                "date": "2026-08-06",
+                "open": "3472.15",
+                "high": "3574.41",
+                "low": "3444.36",
+                "close": "3515.56",
+                "amount": "218807247",
+            },
+            {
+                "date": "2026-08-07",
+                "open": "3537.44",
+                "high": "3613.87",
+                "low": "3507.62",
+                "close": "3563.12",
+                "amount": "229977435",
+            },
+        ]
+
+    result = AkShareIndexProvider(
+        china_loader=failed_primary,
+        china_tencent_loader=tencent,
+    ).fetch("399006", date(2026, 8, 1), date(2026, 8, 7))
+
+    assert result.status is ProviderStatus.SUCCESS
+    assert result.source == "AKSHARE_INDEX_TENCENT"
+    assert result.cutoff_date == date(2026, 8, 7)
+    assert result.records[-1].close_price == Decimal("3563.12")
+    assert result.records[-1].volume == Decimal("229977435")
+    assert result.records[-1].volume_multiplier == 100
+    assert result.records[-1].volume_source == "AKSHARE_INDEX_TENCENT:LOTS_X100"
+
+
+def test_direct_china_index_appends_newer_tencent_sessions_to_stale_primary() -> None:
+    def primary(**_kwargs):  # type: ignore[no-untyped-def]
+        return [
+            {
+                "date": "2026-08-05",
+                "open": "3372.08",
+                "high": "3584.06",
+                "low": "3372.04",
+                "close": "3535.143",
+                "volume": "22649535325",
+            }
+        ]
+
+    def tencent(**_kwargs):  # type: ignore[no-untyped-def]
+        return [
+            {
+                "date": "2026-08-05",
+                "open": "3372.08",
+                "high": "3584.06",
+                "low": "3372.04",
+                "close": "3535.14",
+                "amount": "226495353",
+            },
+            {
+                "date": "2026-08-06",
+                "open": "3472.15",
+                "high": "3574.41",
+                "low": "3444.36",
+                "close": "3515.56",
+                "amount": "218807247",
+            },
+        ]
+
+    result = AkShareIndexProvider(
+        china_loader=primary,
+        china_tencent_loader=tencent,
+    ).fetch("399006", date(2026, 8, 1), date(2026, 8, 7))
+
+    assert result.status is ProviderStatus.SUCCESS
+    assert [row.trade_date for row in result.records] == [
+        date(2026, 8, 5),
+        date(2026, 8, 6),
+    ]
+    assert result.records[0].close_price == Decimal("3535.143")
+    assert result.records[1].source == "AKSHARE_INDEX_TENCENT"
 
 
 def test_direct_index_demo_fallback_is_ohlcv_valid_and_explicitly_labelled(tmp_path) -> None:
@@ -1050,8 +1265,6 @@ def test_refresh_api_uses_shared_calendar_backed_aggregation(
         real_accounts=SimpleNamespace(recalculate_all_accounts=lambda: 0),
     )
     request = SimpleNamespace(app=SimpleNamespace(state=state))
-    weekly_result = ProviderResult.failed("AKSHARE_INDEX_WEEKLY", "unavailable")
-
     class Provider:
         def fetch_weekly(
             self,
@@ -1059,11 +1272,9 @@ def test_refresh_api_uses_shared_calendar_backed_aggregation(
             start_date: date | None = None,
             end_date: date | None = None,
         ):
-            assert start_date is None
-            assert end_date is None
-            return weekly_result
+            raise AssertionError("refresh must derive weekly volume from canonical daily rows")
 
-    calls: list[tuple[str, ProviderResult | None, date | None]] = []
+    calls: list[tuple[str, ProviderResult | None, date | None, date | None]] = []
     aggregation_result = {
         "weekly": 1,
         "monthly": 0,
@@ -1076,15 +1287,15 @@ def test_refresh_api_uses_shared_calendar_backed_aggregation(
     monkeypatch.setattr(
         web,
         "_aggregate_market_timeframes",
-        lambda _request, code, *, weekly_result=None, as_of=None: (
-            calls.append((code, weekly_result, as_of))
+        lambda _request, code, *, weekly_result=None, as_of=None, changed_start_date=None: (
+            calls.append((code, weekly_result, as_of, changed_start_date))
             or aggregation_result
         ),
     )
 
     payload = web.refresh_market(request, "399006")
 
-    assert calls == [("399006", weekly_result, record.trade_date)]
+    assert calls == [("399006", None, record.trade_date, None)]
     assert update_calls == [("399006", None, None)]
     assert recalculated == [("399006", "daily"), ("399006", "weekly")]
     assert payload["aggregation"] == aggregation_result
@@ -1095,7 +1306,196 @@ def test_refresh_api_uses_shared_calendar_backed_aggregation(
     }
 
 
-def test_refresh_api_keeps_daily_overlap_but_fetches_full_weekly_history(
+def test_exchange_calendar_freshness_uses_close_buffer_and_weekend() -> None:
+    provider = ExchangeCalendarProvider()
+
+    assert provider.latest_completed_session(
+        "159941",
+        as_of=datetime(2026, 8, 7, 7, 29, tzinfo=timezone.utc),
+    ) == date(2026, 8, 6)
+    assert provider.latest_completed_session(
+        "159941",
+        as_of=datetime(2026, 8, 7, 7, 30, tzinfo=timezone.utc),
+    ) == date(2026, 8, 7)
+    assert provider.latest_completed_session(
+        "159941",
+        as_of=datetime(2026, 8, 9, 4, 0, tzinfo=timezone.utc),
+    ) == date(2026, 8, 7)
+
+
+def test_exchange_calendar_freshness_honors_us_daylight_saving_close() -> None:
+    provider = ExchangeCalendarProvider()
+
+    assert provider.latest_completed_session(
+        "NDX",
+        as_of=datetime(2026, 8, 7, 20, 29, tzinfo=timezone.utc),
+    ) == date(2026, 8, 6)
+    assert provider.latest_completed_session(
+        "NDX",
+        as_of=datetime(2026, 8, 7, 20, 30, tzinfo=timezone.utc),
+    ) == date(2026, 8, 7)
+
+
+def test_refresh_skips_network_when_local_daily_data_is_already_fresh(
+    monkeypatch,
+) -> None:
+    from backend import web
+
+    cutoff = date(2026, 8, 7)
+
+    class Market:
+        def latest_daily_date(self, _code: str) -> date:
+            return cutoff
+
+        def expected_latest_daily_date(self, _code: str, *, as_of: datetime) -> date:
+            assert as_of.tzinfo is not None
+            return cutoff
+
+        def update_from_providers(self, *_args, **_kwargs):
+            raise AssertionError("an already-fresh refresh must not call the network")
+
+    monkeypatch.setattr(web, "AkShareIndexProvider", lambda: object())
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(market=Market())))
+
+    payload = web.refresh_market(request, "399006")
+
+    assert payload["refresh_outcome"] == "ALREADY_FRESH"
+    assert payload["network_requested"] is False
+    assert payload["local_cutoff_before"] == "2026-08-07"
+    assert payload["expected_cutoff"] == "2026-08-07"
+    assert payload["local_cutoff_after"] == "2026-08-07"
+
+
+def test_refresh_updates_stale_local_data_and_verifies_expected_session(
+    monkeypatch,
+) -> None:
+    from backend import web
+
+    expected = date(2026, 8, 7)
+
+    class Market:
+        cutoff = date(2026, 7, 31)
+
+        def latest_daily_date(self, _code: str) -> date:
+            return self.cutoff
+
+        def expected_latest_daily_date(self, _code: str, *, as_of: datetime) -> date:
+            return expected
+
+        def update_from_providers(
+            self,
+            _code: str,
+            _providers,
+            start_date: date | None,
+            end_date: date | None,
+        ) -> DataUpdateResponse:
+            assert start_date == date(2026, 7, 17)
+            assert end_date is None
+            self.cutoff = expected
+            record = _record(expected, "1.52", source="AKSHARE_INDEX")
+            return DataUpdateResponse(
+                source="AKSHARE_INDEX",
+                records=[record],
+                cutoff_date=expected,
+                records_received=1,
+                records_written=1,
+                records_added=1,
+            )
+
+    aggregate_calls: list[date | None] = []
+    monkeypatch.setattr(web, "AkShareIndexProvider", lambda: object())
+    monkeypatch.setattr(
+        web,
+        "_aggregate_market_timeframes",
+        lambda *_args, changed_start_date=None, **_kwargs: (
+            aggregate_calls.append(changed_start_date)
+            or {"timeframe_status": {}}
+        ),
+    )
+    state = SimpleNamespace(
+        market=Market(),
+        indicators=SimpleNamespace(
+            recalculate=lambda _code, timeframe: {"status": "success", "timeframe": timeframe}
+        ),
+    )
+
+    payload = web.refresh_market(
+        SimpleNamespace(app=SimpleNamespace(state=state)),
+        "399006",
+    )
+
+    assert payload["refresh_outcome"] == "UPDATED"
+    assert payload["network_requested"] is True
+    assert payload["verified_fresh"] is True
+    assert payload["local_cutoff_before"] == "2026-07-31"
+    assert payload["local_cutoff_after"] == "2026-08-07"
+    assert payload["real_accounts_recalculated"] == 0
+    assert aggregate_calls == [date(2026, 7, 17)]
+
+
+def test_refresh_reports_still_stale_when_upstream_stops_before_expected_session(
+    monkeypatch,
+) -> None:
+    from backend import web
+
+    class Market:
+        cutoff = date(2026, 7, 31)
+
+        def latest_daily_date(self, _code: str) -> date:
+            return self.cutoff
+
+        def expected_latest_daily_date(self, _code: str, *, as_of: datetime) -> date:
+            return date(2026, 8, 7)
+
+        def update_from_providers(self, *_args, **_kwargs) -> DataUpdateResponse:
+            self.cutoff = date(2026, 8, 5)
+            record = _record(self.cutoff, "1.50", source="AKSHARE_INDEX")
+            return DataUpdateResponse(
+                source="AKSHARE_INDEX",
+                records=[record],
+                cutoff_date=self.cutoff,
+                records_received=1,
+                records_written=0,
+                records_skipped=1,
+            )
+
+    monkeypatch.setattr(web, "AkShareIndexProvider", lambda: object())
+    state = SimpleNamespace(
+        market=Market(),
+        indicators=SimpleNamespace(recalculate=lambda *_args: None),
+        real_accounts=SimpleNamespace(recalculate_all_accounts=lambda: 0),
+    )
+
+    payload = web.refresh_market(
+        SimpleNamespace(app=SimpleNamespace(state=state)),
+        "399006",
+    )
+
+    assert payload["refresh_outcome"] == "STILL_STALE"
+    assert payload["verified_fresh"] is False
+    assert payload["expected_cutoff"] == "2026-08-07"
+    assert payload["local_cutoff_after"] == "2026-08-05"
+    assert "仍未达到应有交易日" in payload["refresh_error"]
+
+
+def test_refresh_rejects_duplicate_request_for_same_instrument() -> None:
+    from backend import web
+
+    lock = web._market_refresh_lock("518600")
+    assert lock.acquire(blocking=False)
+    try:
+        with pytest.raises(HTTPException) as captured:
+            web.refresh_market(
+                SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace())),
+                "518600",
+            )
+        assert captured.value.status_code == 409
+        assert "正在刷新" in str(captured.value.detail)
+    finally:
+        lock.release()
+
+
+def test_refresh_api_keeps_daily_overlap_and_skips_aggregation_for_cached_failure(
     monkeypatch,
 ) -> None:
     from backend import web
@@ -1147,12 +1547,16 @@ def test_refresh_api_keeps_daily_overlap_but_fetches_full_weekly_history(
         "399006",
     )
 
-    assert weekly_calls == [("399006", None, None)]
+    # A cached response is not a successful refresh.  Do not make a second
+    # full-history weekly request or recalculate indicators/accounts when the
+    # daily provider was unavailable.
+    assert weekly_calls == []
     assert update_calls == [("399006", expected_start, None)]
     assert payload["aggregation_status"] == "not_attempted"
+    assert payload["refresh_outcome"] == "UPSTREAM_FAILED"
 
 
-def test_incremental_refresh_applies_full_multiyear_weekly_volume_overlay(
+def test_incremental_refresh_preserves_old_periods_and_uses_daily_volume(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -1193,14 +1597,38 @@ def test_incremental_refresh_applies_full_multiyear_weekly_volume_overlay(
                     )
                     for index, day in enumerate(old_week)
                 ],
-                _record(
-                    current_week[0],
-                    "200",
-                    source="DIRECT_INDEX_DAILY",
-                ),
             ],
         ),
     )
+    _aggregate(market, "399006", old_week)
+    market.store_result(
+        "399006",
+        ProviderResult.success(
+            "DIRECT_INDEX_DAILY",
+            [_record(current_week[0], "200", source="DIRECT_INDEX_DAILY")],
+        ),
+    )
+    with Session(engine) as session:
+        old_row_before = session.scalar(
+            select(MarketPrice)
+            .join(Instrument)
+            .where(
+                Instrument.code == "399006",
+                MarketPrice.timeframe == "weekly",
+                MarketPrice.trade_date == old_week[-1],
+            )
+        )
+        assert old_row_before is not None
+        old_row_identity = (
+            old_row_before.id,
+            old_row_before.open_price,
+            old_row_before.high_price,
+            old_row_before.low_price,
+            old_row_before.close_price,
+            old_row_before.volume,
+            old_row_before.source,
+            old_row_before.updated_at,
+        )
     expected_overlap = current_week[0] - timedelta(days=14)
     daily_calls: list[tuple[date | None, date | None]] = []
     weekly_calls: list[tuple[date | None, date | None]] = []
@@ -1269,7 +1697,7 @@ def test_incremental_refresh_applies_full_multiyear_weekly_volume_overlay(
     )
 
     assert daily_calls == [(expected_overlap, None)]
-    assert weekly_calls == [(None, None)]
+    assert weekly_calls == []
     assert payload["aggregation"]["timeframe_status"]["weekly"]["status"] == "success"
     with Session(engine) as session:
         weekly_rows = session.scalars(
@@ -1285,10 +1713,17 @@ def test_incremental_refresh_applies_full_multiyear_weekly_volume_overlay(
         old_week[-1],
         current_week[-1],
     ]
-    assert {
-        row.volume_source
-        for row in weekly_rows
-    } == {"AKSHARE_INDEX_WEEKLY"}
+    assert {row.volume_source for row in weekly_rows} == {"AGGREGATED_DAILY_VOLUME"}
+    assert (
+        weekly_rows[0].id,
+        weekly_rows[0].open_price,
+        weekly_rows[0].high_price,
+        weekly_rows[0].low_price,
+        weekly_rows[0].close_price,
+        weekly_rows[0].volume,
+        weekly_rows[0].source,
+        weekly_rows[0].updated_at,
+    ) == old_row_identity
 
 
 def test_manual_aggregate_api_uses_shared_calendar_backed_aggregation(
@@ -1491,7 +1926,7 @@ def test_failure_for_instrument_without_cache_returns_typed_error_when_other_cac
     service = MarketDataService(session_factory)
     service.store_result("589850", ProviderResult.success("CSV", [_record(date(2026, 7, 1), "1.00")]))
 
-    response = service.update_from_provider("159205", FailingProvider())
+    response = service.update_from_provider("159915", FailingProvider())
 
     assert response.status is ProviderStatus.ERROR
     assert response.cache_used is False

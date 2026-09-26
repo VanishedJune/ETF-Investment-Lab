@@ -32,9 +32,12 @@ V34_TABLES = (
     "v34_training_iterations",
     "v34_analysis_runs",
 )
-# Schema 20 introduced V3.4.0.  Schemas 21 and 22 only append the V3.4.1
-# training and V3.4.2 turning-policy tables; they do not rewrite frozen v34_* rows.
-SUPPORTED_SCHEMA_VERSIONS = frozenset({20, 21, 22})
+# Schema 20 introduced V3.4.0.  Schemas 21/22 append the V3.4.1 training and
+# V3.4.2 turning-policy tables; schema 23 appends isolated V3.5 tables. None
+# of them rewrite frozen v34_* rows.
+SUPPORTED_SCHEMA_VERSIONS = frozenset(
+    {20, 21, 22, 23, 24, 25, 26, 27, 28, 29}
+)
 
 
 def _json(value: Any) -> Any:

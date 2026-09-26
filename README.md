@@ -2,9 +2,11 @@
 
 本项目是一个本地运行的桌面端投资研究助手，用于查看指数/ETF行情、技术指标、模型迭代结果和仓位日历。程序不连接券商、不自动交易，所有分析结果仅用于个人研究和复盘。
 
+当前源码包含 V3.7 工作流及 2026-09-26 的数据界面更新。下面的 V3.4 便携包说明属于历史发布版；源码更新不会自动更新 GitHub Releases 中的可执行程序。
+
 ## 普通用户如何直接使用
 
-普通用户不需要安装 Python、Node.js 或开发依赖。请到 GitHub Releases 下载便携版压缩包：
+普通用户不需要安装 Python、Node.js 或开发依赖。GitHub Releases 中的以下压缩包是历史 V3.4 版本，并非当前 V3.7 源码构建：
 
 ```text
 InvestmentLab-V3.4-13W-portable.zip
@@ -50,7 +52,7 @@ dist\InvestmentLab
 
 项目根目录下的 `InvestmentLab.exe` 只是构建脚本同步出来的快捷启动入口。正式发布时请以 `dist\InvestmentLab` 整个目录为准。
 
-## 当前主要功能
+## V3.4 历史发布包的主要功能
 
 - 创业板指数 `399006` 行情、成交量、DIF、DEA、MACD 和 DIF 一阶变化；
 - 广发纳斯达克100 ETF `159941` 行情和指标；
@@ -71,6 +73,35 @@ data\investment_lab.db
 
 该数据库可能包含本地行情缓存、模型状态、仓位日历和后续个人记录，因此源码仓库默认不提交 `data/`。如果需要共享可直接使用的版本，请通过 GitHub Release 上传便携版压缩包。
 
+### 可选：从决策月报项目同步8只ETF行情
+
+同步是独立的显式操作，不会随软件启动、联网刷新或月报生成自动运行。先关闭InvestmentLab，然后执行：
+
+```powershell
+python -m pip install -r requirements-sync.txt
+python scripts/import-ai-assistant-market-data.py --check
+python scripts/import-ai-assistant-market-data.py
+```
+
+默认读取同一`assets`目录下的`AI Investment Assistant`正式清单，只同步8只ETF的日线原始价格和复权收盘价。数据库冲突、清单不完整或任一派生重建失败时会恢复同步前备份。同一`run_id`重复执行为零写入。
+
+自定义路径时使用：
+
+```powershell
+python scripts/import-ai-assistant-market-data.py --source-root "<月报项目路径>" --db "<investment_lab.db路径>"
+```
+
+WebView2缓存由桌面启动器自动治理；软件完全退出后也可只读检查或显式清理：
+
+```powershell
+python scripts/cleanup-webview-cache.py --check
+python scripts/cleanup-webview-cache.py
+```
+
 ## 免责声明
 
 本项目仅用于个人研究、数据可视化和策略复盘，不构成投资建议、收益承诺或交易指令。使用者需要自行承担投资决策风险。
+# 2026-09-26 数据界面更新
+
+当前8只ETF和日历统一读取动态槽位，按交易策略优先级排列；日K、周K面板同时展示价格涨跌幅。标的替换不迁移历史账本，旧持仓仍计入汇总。
+详见 [当前目录与升级说明](docs/DATA_UI_CATALOG_20260926.md)。以下旧版本模型说明只作历史参考，不代表数据界面的启用功能。

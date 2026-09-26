@@ -10,7 +10,10 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   });
   if (!response.ok) {
     let message = `请求失败（${response.status}）`;
-    try { message = (await response.json()).detail ?? message; } catch { /* no JSON response */ }
+    try {
+      const detail = (await response.json()).detail;
+      message = typeof detail === "string" ? detail : JSON.stringify(detail);
+    } catch { /* no JSON response */ }
     throw new ApiError(response.status, message);
   }
   if (response.status === 204) return undefined as T;

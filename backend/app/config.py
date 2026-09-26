@@ -72,7 +72,7 @@ DEFAULT_STRATEGY_CONFIG: dict[str, Any] = {
 DEFAULT_WATCHLIST: dict[str, Any] = {
     "instruments": [
         {"code": "589850", "name": "科创50ETF东财", "exchange": "SSE"},
-        {"code": "159205", "name": "创业板ETF东财", "exchange": "SZSE"},
+        {"code": "159915", "name": "创业板ETF易方达", "exchange": "SZSE"},
         {"code": "159941", "name": "纳指ETF广发", "exchange": "SZSE"},
     ]
 }

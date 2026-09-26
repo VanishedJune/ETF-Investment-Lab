@@ -33,7 +33,7 @@ from ..weekly_analysis.domain import (
 )
 from .providers import MarketDataProvider
 from .market_calendar import CalendarProvider, ExchangeCalendarProvider
-from .instrument_universe import DISPLAY_ONLY_CODES
+from .instrument_universe import DISPLAY_ONLY_CODES, is_etf_code
 
 
 DEMO_DATES = (
@@ -43,7 +43,7 @@ DEMO_DATES = (
     date(2026, 1, 8),
     date(2026, 1, 9),
 )
-DEMO_BASE_PRICES = {"589850": Decimal("1.0000"), "159205": Decimal("0.9000"), "159941": Decimal("1.1000")}
+DEMO_BASE_PRICES = {"589850": Decimal("1.0000"), "159915": Decimal("2.0000"), "159941": Decimal("1.1000")}
 DIRECT_INDEX_DEMO_BASE_PRICES = {
     "000688": Decimal("1000"),
     "399006": Decimal("2000"),
@@ -90,6 +90,41 @@ class MarketDataService:
                     MarketPrice.timeframe == "daily",
                 )
             )
+
+    def expected_latest_daily_date(
+        self,
+        instrument_code: str,
+        *,
+        as_of: datetime | None = None,
+    ) -> date | None:
+        """Return the latest exchange session expected from public vendors."""
+
+        current = as_of or _now()
+        resolver = getattr(self.calendar_provider, "latest_completed_session", None)
+        if callable(resolver):
+            return resolver(instrument_code, as_of=current)
+
+        # Lightweight injected calendars used by tests and offline adapters
+        # may only implement ``sessions``.  This fallback keeps those adapters
+        # usable, while production uses the close-time-aware method above.
+        sessions = self.calendar_provider.sessions(
+            instrument_code,
+            current.date() - timedelta(days=31),
+            current.date(),
+        )
+        return sessions[-1] if sessions else None
+
+    @staticmethod
+    def _aggregation_rebuild_start(changed_start_date: date | None) -> date | None:
+        if changed_start_date is None:
+            return None
+        week_start = changed_start_date - timedelta(days=changed_start_date.weekday())
+        # If the affected ISO week crosses a month boundary, include the full
+        # earlier month so a partial slice can never overwrite a monthly bar.
+        return min(
+            changed_start_date.replace(day=1),
+            week_start.replace(day=1),
+        )
 
     @staticmethod
     def _unknown_instrument_response(instrument_code: str, result: ProviderResult) -> DataUpdateResponse:
@@ -785,6 +820,7 @@ class MarketDataService:
         expected_trade_dates: Iterable[date] | None,
         as_of: date | None,
         weekly_result: ProviderResult | None = None,
+        changed_start_date: date | None = None,
     ) -> dict[str, object] | DataUpdateResponse:
         """Publish complete weekly/monthly rows using an explicit trading calendar."""
         if not self._known_instrument(instrument_code):
@@ -792,15 +828,26 @@ class MarketDataService:
                 instrument_code, ProviderResult.failed("LOCAL", "Invalid aggregation instrument")
             )
         started_at = _now()
+        rebuild_start = self._aggregation_rebuild_start(changed_start_date)
         with self.session_factory() as session:
             instrument = self._instrument(session, instrument_code)
+            daily_query = select(MarketPrice).where(
+                MarketPrice.instrument_id == instrument.id,
+                MarketPrice.timeframe == "daily",
+            )
+            if rebuild_start is not None:
+                daily_query = daily_query.where(MarketPrice.trade_date >= rebuild_start)
             daily = session.scalars(
-                select(MarketPrice)
-                .where(MarketPrice.instrument_id == instrument.id, MarketPrice.timeframe == "daily")
-                .order_by(MarketPrice.trade_date)
+                daily_query.order_by(MarketPrice.trade_date)
             ).all()
             instrument_id = instrument.id
         daily_bars = tuple(self._as_daily_bar(price) for price in daily)
+        if rebuild_start is not None and expected_trade_dates is not None:
+            expected_trade_dates = tuple(
+                trade_day
+                for trade_day in expected_trade_dates
+                if trade_day >= rebuild_start
+            )
         if instrument_code in DIRECT_INDEX_DEMO_BASE_PRICES:
             # Direct-index turnover is vendor-specific and excluded from the
             # immutable read snapshot before either timeframe is evaluated.
@@ -847,13 +894,22 @@ class MarketDataService:
                 error = None
                 try:
                     with self.session_factory() as session, session.begin():
+                        aggregate_options: dict[str, object] = {
+                            "aggregation": aggregations[timeframe],
+                        }
+                        # Preserve compatibility with audit/test subclasses
+                        # that override the historical full-aggregation
+                        # signature.  The new keyword is needed only for a
+                        # real incremental rebuild.
+                        if rebuild_start is not None:
+                            aggregate_options["replace_from"] = rebuild_start
                         counts = self._aggregate(
                             session,
                             instrument_id,
                             daily_bars,
                             timeframe,
                             instrument_code,
-                            aggregation=aggregations[timeframe],
+                            **aggregate_options,
                         )
                         records_written = counts["added"] + counts["updated"]
                         self._add_log(
@@ -928,6 +984,7 @@ class MarketDataService:
                 outcomes["monthly"]["added"] + outcomes["monthly"]["updated"]
             ),
             "timeframe_status": timeframe_status,
+            "recalculated_from": rebuild_start,
         }
 
     def aggregate_periods(
@@ -937,6 +994,7 @@ class MarketDataService:
         expected_trade_dates: Iterable[date] | None = None,
         as_of: date | None = None,
         weekly_result: ProviderResult | None = None,
+        changed_start_date: date | None = None,
     ) -> dict[str, object] | DataUpdateResponse:
         """Aggregate with explicit context or derive it from the exchange calendar."""
         if expected_trade_dates is None:
@@ -958,12 +1016,18 @@ class MarketDataService:
                 )
             earliest_daily = daily_bounds[0] if daily_bounds else None
             latest_daily = daily_bounds[-1] if daily_bounds else None
+            rebuild_start = self._aggregation_rebuild_start(changed_start_date)
             resolved_as_of = (
                 min(as_of, latest_daily)
                 if as_of is not None and latest_daily is not None
                 else latest_daily
             )
             if earliest_daily is not None and resolved_as_of is not None:
+                calendar_start = (
+                    max(earliest_daily, rebuild_start)
+                    if rebuild_start is not None
+                    else earliest_daily
+                )
                 week_end = resolved_as_of + timedelta(
                     days=6 - resolved_as_of.weekday()
                 )
@@ -975,17 +1039,22 @@ class MarketDataService:
                 )
                 calendar_dates = self.calendar_provider.sessions(
                     instrument_code,
-                    earliest_daily,
+                    calendar_start,
                     max(week_end, month_end),
                 )
-                # Display-only ETFs are not model inputs. A legitimately
-                # suspended ETF session (or a public source omitting that
-                # zero-trade day) must not block all weekly/monthly charts.
-                # Aggregate the real sessions that actually exist locally;
-                # never synthesize an OHLC row or carry a price forward.
+                # ETFs can legitimately suspend trading on a mainland session
+                # (or a public source omit a zero-trade day).  Never block the
+                # weekly/monthly chart or model pipeline on those sessions and
+                # never synthesize an OHLC row or carry a price forward:
+                # aggregate the real sessions that actually exist locally.
                 expected_trade_dates = (
-                    tuple(daily_bounds)
+                    tuple(
+                        trade_day
+                        for trade_day in daily_bounds
+                        if trade_day >= calendar_start
+                    )
                     if instrument_code in DISPLAY_ONLY_CODES
+                    or is_etf_code(instrument_code)
                     else calendar_dates
                 )
             else:
@@ -996,6 +1065,7 @@ class MarketDataService:
             expected_trade_dates=expected_trade_dates,
             as_of=as_of,
             weekly_result=weekly_result,
+            changed_start_date=changed_start_date,
         )
 
     def _apply_upstream_weekly_volume(
@@ -1034,6 +1104,7 @@ class MarketDataService:
         instrument_code: str,
         *,
         aggregation: AggregationResult | None = None,
+        replace_from: date | None = None,
     ) -> dict[str, int]:
         if timeframe not in ("weekly", "monthly"):
             raise ValueError(f"Unsupported aggregation timeframe: {timeframe}")
@@ -1071,12 +1142,15 @@ class MarketDataService:
                 source=period.price_source,
                 volume_source=period.volume_source,
             )
-        existing = session.scalars(
-            select(MarketPrice).where(
-                MarketPrice.instrument_id == instrument_id,
-                MarketPrice.timeframe == timeframe,
+        existing_query = select(MarketPrice).where(
+            MarketPrice.instrument_id == instrument_id,
+            MarketPrice.timeframe == timeframe,
+        )
+        if replace_from is not None:
+            existing_query = existing_query.where(
+                MarketPrice.trade_date >= replace_from
             )
-        ).all()
+        existing = session.scalars(existing_query).all()
         by_period: dict[tuple[int, int], list[MarketPrice]] = defaultdict(list)
         for row in existing:
             by_period[self._period_key(row.trade_date, timeframe)].append(row)

@@ -175,37 +175,39 @@ async function mockAnalysis(page: Page) {
   });
 }
 
-test("single research workbench exposes five charts and keeps three ETFs display-only", async ({ page }) => {
+test("single data-only workbench exposes the unified eight-ETF panel", async ({ page }) => {
   await page.goto("/");
   await page.waitForLoadState("networkidle");
 
-  await expect(page.getByRole("heading", { name: "双市场周线研究台" })).toBeVisible();
-  await expect(page.getByRole("button", { name: /创业板指数/ })).toBeVisible();
-  await expect(page.getByRole("button", { name: /广发纳斯达克100ETF/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "ETF 行情面板" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /创业板指数/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /纳指ETF广发/ })).toBeVisible();
   await expect(page.getByRole("button", { name: /广发黄金ETF/ })).toBeVisible();
   await expect(page.getByRole("button", { name: /华宝银行ETF/ })).toBeVisible();
   await expect(page.getByRole("button", { name: /鹏华酒ETF/ })).toBeVisible();
   await expect(page.getByText("科创50")).toHaveCount(0);
-  await expect(page.getByRole("link")).toHaveCount(0);
-  await expect(page.getByTestId("timeframe-weekly")).toHaveAttribute("aria-pressed", "true");
-  await expect(page.getByText("本地计算 · 不调用AI")).toBeVisible();
+  const slotLink = page.getByRole("link", { name: "ETF 替换" });
+  await expect(slotLink).toHaveCount(1);
+  await expect(slotLink).toHaveAttribute("href", "/etf-slots");
+  await expect(page.getByText("日 K + 周 K 共用横轴", { exact: true })).toBeVisible();
+  await expect(page.getByText("无 AI · 无推理迭代")).toBeVisible();
   await expect(page.getByTestId("unified-market-chart")).toHaveAttribute(
     "data-chart-state",
     "rendered",
   );
   await expect(page.getByTestId("unified-market-chart").locator("canvas")).toHaveCount(1);
-  await expect(page.getByTestId("v34-analyze")).toBeVisible();
+  await expect(page.getByText("数据分析", { exact: true })).toHaveCount(0);
 });
 
-test("weekly and monthly direct-index charts expose continuous volume and colored momentum labels", async ({ page }) => {
+test("weekly and monthly ETF charts expose continuous volume and colored momentum labels", async ({ page }) => {
   await page.goto("/");
   await page.waitForLoadState("networkidle");
 
   for (const timeframe of ["weekly", "monthly"]) {
-    const response = await page.request.get(`/api/market/399006/prices?timeframe=${timeframe}`);
+    const response = await page.request.get(`/api/market/159941/prices?timeframe=${timeframe}`);
     await expect(response).toBeOK();
     const payload = await response.json();
-    expect(payload.rows.length).toBeGreaterThan(timeframe === "weekly" ? 700 : 150);
+    expect(payload.rows.length).toBeGreaterThan(timeframe === "weekly" ? 500 : 100);
     expect(payload.rows.every((row: { volume: string | null }) => row.volume !== null)).toBeTruthy();
   }
 
@@ -215,7 +217,7 @@ test("weekly and monthly direct-index charts expose continuous volume and colore
   await expect(page.getByText("MACD柱（负）")).toHaveCSS("color", "rgb(20, 131, 109)");
   await expect(page.getByTestId("dif-first-change-label")).toHaveCSS("color", "rgb(123, 76, 160)");
   await page.getByTestId("timeframe-monthly").click();
-  await expect(page.getByTestId("unified-market-chart")).toHaveAttribute(
+  await expect(page.locator(".monthly-chart-card").getByTestId("unified-market-chart")).toHaveAttribute(
     "data-chart-state",
     "rendered",
   );
@@ -239,7 +241,7 @@ test("market cursor data stays outside the plot and pointer updates are frame-co
   const beforeIndex = Number(await details.getAttribute("data-hover-index"));
   await canvas.hover({ position: { x: 110, y: 220 } });
   await expect.poll(async () => Number(await details.getAttribute("data-hover-index"))).not.toBe(beforeIndex);
-  await expect(details).toContainText("价格");
+  await expect(details).toContainText("收盘");
   await expect(page.locator(".echarts-tooltip")).toHaveCount(0);
 
   const updatesBefore = Number(await details.getAttribute("data-update-count"));
@@ -258,59 +260,56 @@ test("market cursor data stays outside the plot and pointer updates are frame-co
   expect(updatesAfter - updatesBefore).toBeLessThanOrEqual(1);
 });
 
-test.skip("legacy V2 combined training-analysis panel", async ({ page }) => {
-  const consoleErrors: string[] = [];
-  page.on("console", (message) => {
-    if (message.type() === "error") consoleErrors.push(message.text());
+test("legacy training and analysis controls stay absent from the data-only workbench", async ({ page }) => {
+  const legacyRequests: string[] = [];
+  page.on("request", (request) => {
+    if (/\/api\/(v2\/analysis|v33|v341|v343|v35\/analysis|v37\/(analysis|fusion|ai))/.test(request.url())) {
+      legacyRequests.push(request.url());
+    }
   });
-  await mockAnalysis(page);
   await page.goto("/");
   await page.waitForLoadState("networkidle");
 
-  await page.getByRole("button", { name: "数据分析" }).click();
-  await expect(page.getByTestId("analysis-progress")).toContainText("递进迭代");
-  await expect(page.getByTestId("analysis-progress")).toContainText("260");
-  await expect(page.getByTestId("analysis-progress")).toContainText("W0260");
-  await expect(page.getByTestId("analysis-progress")).toContainText("M0009");
-  await expect(page.getByTestId("analysis-progress")).toContainText("分析完成", {
-    timeout: 5_000,
-  });
-  await expect(page.getByTestId("position-recommendation")).toContainText("增加 60");
-  await expect(page.getByTestId("ratio-advice")).toHaveText("7 : 3");
-  await expect(page.getByTestId("batch-plan").locator("li")).toHaveCount(4);
-  await expect(page.getByTestId("batch-plan")).toContainText("±3 个交易日");
-  await expect(page.getByTestId("batch-plan")).toContainText("2026-08-04");
-  await expect(page.getByTestId("model-improvement-chart")).toHaveAttribute(
-    "data-chart-state",
-    "rendered",
-  );
-  await expect(page.getByTestId("model-improvement-chart").locator("canvas")).toBeVisible();
-  await page.screenshot({
-    path: "../reports/weekly-v2-workbench.png",
-    fullPage: true,
-  });
-  expect(consoleErrors).toEqual([]);
+  await expect(page.getByRole("button", { name: "数据分析" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "训练模型" })).toHaveCount(0);
+  await expect(page.getByTestId("model-improvement-chart")).toHaveCount(0);
+  expect(legacyRequests).toEqual([]);
 });
 
 test("position calendar renders 42 local-date cells and audits percentage-event CRUD", async ({ page }) => {
   await page.clock.install({ time: new Date("2026-08-01T12:00:00+09:00") });
-  let position: number | null = null;
+  const positions: Record<string, number | null> = {
+    "399006": null,
+    "159941": null,
+    "518600": 10,
+  };
   let nextId = 1;
-  let events: Record<string, unknown>[] = [];
+  let events: Record<string, any>[] = [{
+    id: 100,
+    instrument_code: "518600",
+    direction: "increase",
+    operation_date: "2026-08-01",
+    change_percent: 10,
+    position_after: 10,
+    sequence: 1,
+    note: "黄金仓位",
+    created_at: "2026-07-31T01:00:00Z",
+    updated_at: "2026-07-31T01:00:00Z",
+  }];
 
   await page.route("**/api/investment-calendar/current-positions", async (route) => {
-    await route.fulfill({ json: { "399006": position, "159941": null, NDX: null } });
+    await route.fulfill({ json: positions });
   });
   await page.route("**/api/v2/position-events?*", async (route) => {
     await route.fulfill({ json: events });
   });
   await page.route("**/api/v2/position-events", async (route) => {
     const body = route.request().postDataJSON();
-    position = (position ?? 0) + body.change_percent;
+    positions[body.instrument_code] = Number(positions[body.instrument_code] ?? 0) + body.change_percent;
     const event = {
       id: nextId++,
       ...body,
-      position_after: position,
+      position_after: positions[body.instrument_code],
       sequence: 1,
       created_at: "2026-07-31T02:00:00Z",
       updated_at: "2026-07-31T02:00:00Z",
@@ -324,13 +323,15 @@ test("position calendar renders 42 local-date cells and audits percentage-event 
       const body = route.request().postDataJSON();
       const event = events.find((item) => item.id === id)!;
       const oldChange = Number(event.change_percent);
-      position = Number(position) - oldChange + body.change_percent;
-      Object.assign(event, body, { position_after: position });
+      const symbol = String(event.instrument_code);
+      positions[symbol] = Number(positions[symbol]) - oldChange + body.change_percent;
+      Object.assign(event, body, { position_after: positions[symbol] });
       await route.fulfill({ json: event });
       return;
     }
+    const removed = events.find((item) => item.id === id)!;
     events = events.filter((item) => item.id !== id);
-    position = events.length ? Number(events[0].position_after) : null;
+    positions[String(removed.instrument_code)] = null;
     await route.fulfill({ json: { deleted: true, id } });
   });
 
@@ -350,7 +351,10 @@ test("position calendar renders 42 local-date cells and audits percentage-event 
   await expect(row).toContainText("15%");
   await expect(page.getByTestId("current-position")).toContainText("15%");
   await expect(page.getByTestId("calendar-day-2026-08-01").locator(".increase-marker")).toHaveCount(1);
-  await expect(page.getByTestId("selected-date-events")).toContainText("1 笔");
+  await expect(page.getByTestId("selected-date-events")).toContainText("2 笔");
+  await expect(page.getByTestId("selected-date-events")).toContainText("纳指ETF广发");
+  await expect(page.getByTestId("selected-date-events")).toContainText("广发黄金ETF");
+  await expect(page.getByTestId("position-event-100")).toContainText("广发黄金ETF");
 
   await row.getByRole("button", { name: "修改" }).click();
   await page.getByTestId("position-change").fill("20");
@@ -366,7 +370,99 @@ test("position calendar renders 42 local-date cells and audits percentage-event 
   await expect(page.getByTestId("current-position")).toContainText("0%");
 });
 
-test("latest market selection wins and clears the unified chart while data is pending", async ({ page }) => {
+test("selecting a calendar date updates the top holdings to that date and today restores latest", async ({ page }) => {
+  await page.clock.install({ time: new Date("2026-08-10T12:00:00+09:00") });
+  const positions = {
+    "159941": 15,
+    "159915": 0,
+    "518600": 10,
+    "512800": 0,
+    "512690": 30,
+    "512010": 0,
+    "159622": 0,
+    "516150": 0,
+  };
+  const events = [
+    {
+      id: 4,
+      instrument_code: "512690",
+      direction: "increase",
+      operation_date: "2026-08-08",
+      change_percent: 30,
+      position_after: 30,
+      sequence: 1,
+      note: "酒ETF建仓",
+    },
+    {
+      id: 3,
+      instrument_code: "159941",
+      direction: "decrease",
+      operation_date: "2026-08-05",
+      change_percent: 5,
+      position_after: 15,
+      sequence: 1,
+      note: "纳指减仓",
+    },
+    {
+      id: 2,
+      instrument_code: "518600",
+      direction: "increase",
+      operation_date: "2026-07-31",
+      change_percent: 10,
+      position_after: 10,
+      sequence: 1,
+      note: "黄金建仓",
+    },
+    {
+      id: 1,
+      instrument_code: "159941",
+      direction: "increase",
+      operation_date: "2026-07-15",
+      change_percent: 20,
+      position_after: 20,
+      sequence: 1,
+      note: "纳指建仓",
+    },
+  ];
+
+  await page.route("**/api/investment-calendar/current-positions", (route) =>
+    route.fulfill({ json: positions }));
+  await page.route("**/api/v2/position-events?*", (route) =>
+    route.fulfill({ json: events }));
+
+  await page.goto("/");
+  await page.waitForLoadState("networkidle");
+  await expect(page.getByTestId("position-snapshot-label")).toHaveText("当前总仓位");
+  await expect(page.getByTestId("total-position")).toHaveText("55%");
+  await expect(page.getByTestId("position-card-512690")).toContainText("30%");
+
+  await page.getByTestId("calendar-previous-month").click();
+  await page.getByTestId("calendar-day-2026-07-31").click();
+  await expect(page.getByTestId("position-snapshot-label")).toHaveText(
+    "截至 2026-07-31 的总仓位",
+  );
+  await expect(page.getByTestId("total-position")).toHaveText("30%");
+  await expect(page.getByTestId("position-card-159941")).toContainText("20%");
+  await expect(page.getByTestId("position-card-518600")).toContainText("10%");
+  await expect(page.getByTestId("position-card-512690")).toContainText("0%");
+
+  // A day without an event carries forward the most recent positions without
+  // inventing a transaction on that date.
+  await page.getByTestId("calendar-day-2026-08-02").click();
+  await expect(page.getByTestId("total-position")).toHaveText("30%");
+  await expect(page.getByTestId("selected-date-events")).toContainText("0 笔");
+
+  await page.getByTestId("calendar-day-2026-08-05").click();
+  await expect(page.getByTestId("total-position")).toHaveText("25%");
+  await expect(page.getByTestId("position-card-159941")).toContainText("15%");
+
+  await page.getByRole("button", { name: "回到今天" }).click();
+  await expect(page.getByTestId("position-snapshot-label")).toHaveText("当前总仓位");
+  await expect(page.getByTestId("total-position")).toHaveText("55%");
+  await expect(page.getByTestId("position-card-512690")).toContainText("30%");
+});
+
+test("new market selection clears the unified chart while data is pending", async ({ page }) => {
   await page.goto("/");
   await page.waitForLoadState("networkidle");
   await expect(page.getByTestId("unified-market-chart")).toHaveAttribute(
@@ -374,11 +470,11 @@ test("latest market selection wins and clears the unified chart while data is pe
     "rendered",
   );
 
-  await page.route("**/api/market/159941/prices?timeframe=weekly", async (route) => {
+  await page.route("**/api/market/518600/prices?timeframe=weekly", async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 1_000));
     await route.continue();
   });
-  await page.getByRole("button", { name: /广发纳斯达克100ETF/ }).click();
+  await page.getByRole("button", { name: /广发黄金ETF/ }).click();
   await expect(page.getByTestId("unified-market-chart")).toHaveAttribute(
     "data-chart-state",
     "loading",
@@ -391,7 +487,7 @@ test("latest market selection wins and clears the unified chart while data is pe
   );
 });
 
-test("all three display-only ETFs load daily, weekly and monthly charts without model calls", async ({ page }) => {
+test("all original display ETFs use the same shared daily-weekly chart and calendar", async ({ page }) => {
   const forbidden: string[] = [];
   const displayCodes = ["518600", "512800", "512690"];
   page.on("request", (request) => {
@@ -417,20 +513,20 @@ test("all three display-only ETFs load daily, weekly and monthly charts without 
   await page.waitForLoadState("networkidle");
   for (const name of [/广发黄金ETF/, /华宝银行ETF/, /鹏华酒ETF/]) {
     await page.getByRole("button", { name }).click();
-    await expect(page.getByRole("heading", { name: "该ETF仅用于行情与技术指标观察" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: /日线 \/ 周线指标/ })).toBeVisible();
     await expect(page.getByTestId("v34-train")).toHaveCount(0);
-    await expect(page.locator(".position-calendar")).toHaveCount(0);
-    for (const timeframe of ["daily", "weekly", "monthly"]) {
-      await page.getByTestId(`timeframe-${timeframe}`).click();
-      await expect(page.getByTestId("unified-market-chart")).toHaveAttribute("data-chart-state", "rendered");
-      await expect(page.getByTestId("dif-first-change-label")).toBeVisible();
-    }
+    await expect(page.locator(".position-calendar")).toHaveCount(1);
+    await expect(page.getByTestId("unified-market-chart")).toHaveAttribute("data-chart-state", "rendered");
+    await expect(page.getByTestId("dif-first-change-label")).toBeVisible();
+    await page.getByTestId("timeframe-monthly").click();
+    await expect(page.locator(".monthly-chart-card").getByTestId("unified-market-chart")).toHaveAttribute("data-chart-state", "rendered");
+    await page.getByTestId("timeframe-monthly").click();
   }
   expect(forbidden).toEqual([]);
 });
 
 test("unfinished weekly overlay remains visible and is clearly separated from the complete cutoff", async ({ page }) => {
-  await page.route("**/api/market/399006/prices?timeframe=weekly", (route) => route.fulfill({
+  await page.route("**/api/market/159941/prices?timeframe=weekly", (route) => route.fulfill({
     json: {
       current_period_status: "INCOMPLETE_CURRENT_PERIOD",
       rows: [
@@ -439,16 +535,68 @@ test("unfinished weekly overlay remains visible and is clearly separated from th
       ],
     },
   }));
-  await page.route("**/api/indicators/399006?timeframe=weekly", (route) => route.fulfill({
+  await page.route("**/api/indicators/159941?timeframe=weekly", (route) => route.fulfill({
     json: [{ date: "2026-07-31", dif: "1", dea: "0.8", macd_histogram: "0.4", dif_first_change: "0.1" }],
   }));
 
   await page.goto("/");
   await page.waitForLoadState("networkidle");
-  await expect(page.getByTestId("incomplete-period-notice")).toContainText("本周尚未完成");
+  await expect(page.getByTestId("incomplete-period-notice")).toContainText("当前周期尚未完成");
   await expect(page.getByTestId("incomplete-period-notice")).toContainText("2026-08-05");
-  await expect(page.getByTestId("data-cutoff")).toHaveText("2026-07-31");
+  await expect(page.getByTestId("incomplete-period-notice")).toContainText("2026-07-31");
+  await expect(page.getByTestId("data-cutoff")).toHaveText("2026-08-05");
   await expect(page.getByTestId("unified-market-chart")).toHaveAttribute("data-chart-state", "rendered");
+});
+
+test("refresh button pulls latest data from the public source and updates the cutoff", async ({ page }) => {
+  let refreshCalled = false;
+  await page.route("**/api/market/159941/refresh", async (route) => {
+    refreshCalled = true;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    await route.fulfill({
+      json: {
+        status: "success",
+        refresh_outcome: "UPDATED",
+        cutoff_date: "2026-08-05",
+        local_cutoff_before: "2026-07-31",
+        expected_cutoff: "2026-08-05",
+        local_cutoff_after: "2026-08-05",
+        source: "AKSHARE_ETF",
+        records_added: 3,
+        records_updated: 1,
+        records_skipped: 7,
+        network_requested: true,
+        verified_fresh: true,
+        records: [{ date: "2026-08-05" }],
+        aggregation_status: "success",
+      },
+    });
+  });
+  await page.route("**/api/market/159941/prices?timeframe=weekly", (route) => route.fulfill({
+    json: {
+      current_period_status: "INCOMPLETE_CURRENT_PERIOD",
+      rows: [
+        { date: "2026-07-31", open: "2900", high: "3000", low: "2850", close: "2980", volume: "100", source: "TEST", is_complete: true, period_status: "COMPLETE" },
+        { date: "2026-08-05", open: "2980", high: "3010", low: "2800", close: "2860", volume: "60", source: "PROVISIONAL_DAILY_AGGREGATION", is_complete: false, period_status: "INCOMPLETE_CURRENT_PERIOD" },
+      ],
+    },
+  }));
+  await page.route("**/api/indicators/159941?timeframe=weekly", (route) => route.fulfill({
+    json: [{ date: "2026-07-31", dif: "1", dea: "0.8", macd_histogram: "0.4", dif_first_change: "0.1" }],
+  }));
+
+  await page.goto("/");
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("button", { name: "刷新行情" }).click();
+  await expect(page.getByRole("button", { name: "正在下载…" })).toBeDisabled();
+  await expect(page.locator(".flash")).toContainText("2026-08-05");
+  await expect(page.getByTestId("data-cutoff")).toHaveText("2026-08-05");
+  const audit = page.getByTestId("refresh-audit");
+  await expect(audit).toContainText("本地原截止2026-07-31");
+  await expect(audit).toContainText("应有交易日2026-08-05");
+  await expect(audit).toContainText("新增 3 · 修订 1 · 跳过 7");
+  await expect(audit.locator(".verified")).toHaveText("通过");
+  expect(refreshCalled).toBe(true);
 });
 
 test("159941 stays an active ETF and never aliases its position or analysis to V3.2 NDX", async ({ page }) => {
@@ -478,20 +626,20 @@ test("159941 stays an active ETF and never aliases its position or analysis to V
 
   await page.goto("/");
   await page.waitForLoadState("networkidle");
-  await page.getByRole("button", { name: /广发纳斯达克100ETF/ }).click();
-  await expect(page.getByRole("heading", { name: /广发纳斯达克100ETF · 价格/ })).toBeVisible();
-  await expect(page.locator(".position-totals").filter({ hasText: "广发纳指ETF" })).toContainText("10%");
-  await expect(page.getByTestId("v32-readonly-badge")).toContainText("NDX底层基准");
+  await page.getByRole("button", { name: /纳指ETF广发/ }).click();
+  await expect(page.getByRole("heading", { name: /纳指ETF广发 · 日 K \+ 周 K 共享横轴/ })).toBeVisible();
+  await expect(page.getByTestId("current-position")).toContainText("10%");
+  await expect(page.getByTestId("v32-readonly-badge")).toHaveCount(0);
   expect(invalidV32Requests).toEqual([]);
 });
 
-test("failed timeframe request leaves the unified chart empty", async ({ page }) => {
+test("failed daily request for a new ETF leaves the unified chart in an error state", async ({ page }) => {
   await page.goto("/");
   await page.waitForLoadState("networkidle");
-  await page.route("**/api/market/399006/prices?timeframe=daily", async (route) => {
+  await page.route("**/api/market/518600/prices?timeframe=daily", async (route) => {
     await route.fulfill({ status: 500, json: { detail: "controlled chart load failure" } });
   });
-  await page.getByTestId("timeframe-daily").click();
+  await page.getByRole("button", { name: /广发黄金ETF/ }).click();
 
   await expect(page.getByText("controlled chart load failure").first()).toBeVisible();
   await expect(page.getByTestId("unified-market-chart")).toHaveAttribute(
@@ -504,7 +652,7 @@ test("failed timeframe request leaves the unified chart empty", async ({ page })
 test("legacy paths redirect to the single workbench and favicon remains local", async ({ page }) => {
   await page.goto("/simulation");
   await expect(page).toHaveURL(/\/$/);
-  await expect(page.getByRole("heading", { name: "双市场周线研究台" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "ETF 行情面板" })).toBeVisible();
   await expect(page.locator('link[rel="icon"]')).toHaveAttribute(
     "href",
     /investment-lab-avatar\.svg$/,

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 from unittest.mock import patch
@@ -29,8 +29,8 @@ def test_v34_schema_is_isolated_idempotent_and_exactly_13_weeks(tmp_path: Path) 
             "SELECT COUNT(*) FROM v33_model_versions"
         ).scalar_one()
 
-    assert run_migrations(engine) == SCHEMA_VERSION == 22
-    assert run_migrations(engine) == 22
+    assert run_migrations(engine) == SCHEMA_VERSION
+    assert run_migrations(engine) == SCHEMA_VERSION
 
     with engine.connect() as connection:
         tables = {
@@ -40,7 +40,10 @@ def test_v34_schema_is_isolated_idempotent_and_exactly_13_weeks(tmp_path: Path) 
             )
         }
         assert set(V34_TABLES) <= tables
-        assert connection.exec_driver_sql("PRAGMA user_version").scalar_one() == 22
+        assert (
+            connection.exec_driver_sql("PRAGMA user_version").scalar_one()
+            == SCHEMA_VERSION
+        )
         assert connection.exec_driver_sql(
             "SELECT COUNT(*) FROM v33_model_versions"
         ).scalar_one() == before_v33

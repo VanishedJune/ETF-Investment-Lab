@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 from unittest.mock import patch
@@ -33,8 +33,8 @@ def test_v341_schema_is_append_only_idempotent_and_versioned(tmp_path: Path) -> 
                 "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'v341_%'"
             )
         }
-    assert run_migrations(engine) == SCHEMA_VERSION == 22
-    assert run_migrations(engine) == 22
+    assert run_migrations(engine) == SCHEMA_VERSION
+    assert run_migrations(engine) == SCHEMA_VERSION
     with engine.connect() as connection:
         tables = {
             row[0]
@@ -44,7 +44,10 @@ def test_v341_schema_is_append_only_idempotent_and_versioned(tmp_path: Path) -> 
         }
         assert set(V341_TABLES) <= tables
         assert old_tables <= tables
-        assert connection.exec_driver_sql("PRAGMA user_version").scalar_one() == 22
+        assert (
+            connection.exec_driver_sql("PRAGMA user_version").scalar_one()
+            == SCHEMA_VERSION
+        )
         forecast_sql = connection.exec_driver_sql(
             "SELECT sql FROM sqlite_master WHERE name='v341_forecasts'"
         ).scalar_one()

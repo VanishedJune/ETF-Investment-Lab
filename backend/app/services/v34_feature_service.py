@@ -87,8 +87,9 @@ class V34FeatureService:
 
     @staticmethod
     def validate_market(market: str) -> None:
-        if market not in SUPPORTED_MARKETS:
-            raise V34FeatureError("V3.4 supports only 399006 and 159941")
+        code = str(market)
+        if code != "399006" and not (len(code) == 6 and code.isdigit()):
+            raise V34FeatureError("V3.4 supports 399006 and six-digit ETF codes")
 
     def weekly_anchors(
         self,

@@ -494,7 +494,8 @@ class V33FeatureService:
 
     @staticmethod
     def validate_market(market: str) -> None:
-        if market not in SUPPORTED_MARKETS:
+        code = str(market)
+        if code != "399006" and not (len(code) == 6 and code.isdigit()):
             raise V33FeatureError("V3.3 supports only 399006 and 159941")
 
     def load_snapshot(
@@ -738,7 +739,7 @@ class V33FeatureService:
             missing_masks=missing_masks,
             provenance={
                 "target": market,
-                "benchmark": BENCHMARK_BY_MARKET[market],
+        "benchmark": BENCHMARK_BY_MARKET.get(market),
                 "target_price_sources": sorted({bar.source or "UNKNOWN" for bar in ordered}),
                 "observations": obs_provenance,
                 "excluded_future_observations": excluded_future,
@@ -753,7 +754,7 @@ class V33FeatureService:
                 ),
             },
             derivative_turn=derivative_turn,
-            benchmark_market=BENCHMARK_BY_MARKET[market],
+            benchmark_market=BENCHMARK_BY_MARKET.get(market),
         )
 
     def _daily_features(

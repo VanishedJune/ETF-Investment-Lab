@@ -38,7 +38,7 @@ const instrumentOptions = computed(() => {
   const linked = plans.value.map((plan) => ({ code: plan.instrument_code, name: plan.name, amount: plan.weekly_amount }));
   const fallback = [
     { code: "589850", name: "科创50ETF", amount: null },
-    { code: "159205", name: "创业板ETF", amount: null },
+    { code: "159915", name: "创业板ETF易方达", amount: null },
     { code: "159941", name: "纳指ETF", amount: null },
   ];
   const seen = new Set<string>();

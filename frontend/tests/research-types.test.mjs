@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   legendColors,
   normalizeSeries,
+  volumeChangeBarData,
 } from "../src/types/research.ts";
 
 test("normalizes market and indicator rows onto one continuous date axis", () => {
@@ -31,9 +32,28 @@ test("normalizes market and indicator rows onto one continuous date axis", () =>
 });
 
 test("uses the specified curve and histogram legend colors", () => {
-  assert.equal(legendColors.dif, "#12687e");
-  assert.equal(legendColors.dea, "#d88b2c");
-  assert.equal(legendColors.macdPositive, "#d9553f");
-  assert.equal(legendColors.macdNegative, "#14836d");
-  assert.equal(legendColors.difFirstChange, "#7b4ca0");
+  assert.equal(legendColors.priceUp, "#d64b4b");
+  assert.equal(legendColors.priceDown, "#27845a");
+  assert.equal(legendColors.dif, "#52789c");
+  assert.equal(legendColors.dea, "#a57738");
+  assert.equal(legendColors.macdPositive, "#d64b4b");
+  assert.equal(legendColors.macdNegative, "#27845a");
+  assert.equal(legendColors.difFirstChange, "#807096");
+  assert.equal(legendColors.volumeIncrease, "#d64b4b");
+  assert.equal(legendColors.volumeDecrease, "#27845a");
+  assert.equal(legendColors.ma5, "#ae794b");
+  assert.equal(legendColors.ma10, "#52789c");
+  assert.equal(legendColors.ma20, "#97718f");
+});
+
+test("colors volume increases red and decreases green across sparse gaps", () => {
+  const bars = volumeChangeBarData([100, 120, 90, 90, null, 110], 0.8);
+
+  assert.equal(bars[0].itemStyle.color, legendColors.volume);
+  assert.equal(bars[1].itemStyle.color, legendColors.volumeIncrease);
+  assert.equal(bars[2].itemStyle.color, legendColors.volumeDecrease);
+  assert.equal(bars[3].itemStyle.color, legendColors.volume);
+  assert.equal(bars[4], null);
+  assert.equal(bars[5].itemStyle.color, legendColors.volumeIncrease);
+  assert.equal(bars[5].itemStyle.opacity, 0.8);
 });

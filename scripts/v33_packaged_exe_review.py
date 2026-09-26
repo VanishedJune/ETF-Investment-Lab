@@ -25,7 +25,7 @@ from typing import Any, Callable
 from urllib.request import urlopen
 
 
-APP_TITLE = "双市场投资研究台 V3.4-13W"
+APP_TITLE = "双市场投资研究台 V3.5-8W"
 ACTIVE_MARKETS = ("399006", "159941")
 WM_CLOSE = 0x0010
 
@@ -396,7 +396,10 @@ def _review_one_click_batch(
     launcher = project_root / "一键启动投资助手.bat"
     if not launcher.is_file():
         raise FileNotFoundError(launcher)
-    port_file = release_root / "data" / "desktop-port.json"
+    # The Chinese launcher prefers the project-root desktop EXE (the app the
+    # user actually runs); its dynamic-port record is written next to that
+    # EXE, not inside the portable dist release.
+    port_file = project_root / "data" / "desktop-port.json"
     if port_file.exists():
         raise AssertionError("packaged app is already running before batch review")
     completed = subprocess.run(
@@ -468,7 +471,11 @@ def _copy_maintenance_clone(release_root: Path, destination: Path) -> Path:
     clone.mkdir(parents=True)
     shutil.copy2(release_root / "InvestmentLab.exe", clone / "InvestmentLab.exe")
     shutil.copytree(release_root / "_internal", clone / "_internal")
-    marker = release_root / "V3.4-13W.release"
+    marker = (
+        release_root / "V3.5-8W.release"
+        if (release_root / "V3.5-8W.release").exists()
+        else release_root / "V3.4-13W.release"
+    )
     if marker.is_file():
         shutil.copy2(marker, clone / marker.name)
     (clone / "data" / "backups").mkdir(parents=True)
@@ -592,7 +599,11 @@ def main() -> int:
     project_root = Path(__file__).resolve().parents[1]
     release_root = arguments.release_root.resolve()
     executable = release_root / "InvestmentLab.exe"
-    marker = release_root / "V3.4-13W.release"
+    marker = (
+        release_root / "V3.5-8W.release"
+        if (release_root / "V3.5-8W.release").exists()
+        else release_root / "V3.4-13W.release"
+    )
     database = release_root / "data" / "investment_lab.db"
     for required in (executable, marker, database):
         if not required.is_file():

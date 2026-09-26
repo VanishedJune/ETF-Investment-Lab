@@ -59,8 +59,8 @@ def test_initialize_database_is_idempotent(tmp_path: Path) -> None:
 
     engine = create_database_engine(database)
     with engine.connect() as connection:
-        assert connection.execute(select(func.count()).select_from(Instrument)).scalar_one() == 9
-        assert connection.execute(select(func.count()).select_from(InvestmentPlan)).scalar_one() == 3
+        assert connection.execute(select(func.count()).select_from(Instrument)).scalar_one() == 12
+        assert connection.execute(select(func.count()).select_from(InvestmentPlan)).scalar_one() == 1
         assert connection.execute(select(func.count()).select_from(SimulationAccount)).scalar_one() == 4
         assert connection.execute(select(func.count()).select_from(RealAccount)).scalar_one() == 1
 
@@ -527,8 +527,8 @@ def test_initialize_database_is_safe_when_called_concurrently_by_processes(tmp_p
 
     engine = create_database_engine(database)
     with engine.connect() as connection:
-        assert connection.execute(select(func.count()).select_from(Instrument)).scalar_one() == 9
-        assert connection.execute(select(func.count()).select_from(InvestmentPlan)).scalar_one() == 3
+        assert connection.execute(select(func.count()).select_from(Instrument)).scalar_one() == 12
+        assert connection.execute(select(func.count()).select_from(InvestmentPlan)).scalar_one() == 1
         assert connection.execute(select(func.count()).select_from(SimulationAccount)).scalar_one() == 4
 
 
@@ -687,16 +687,19 @@ def test_default_instruments_and_configuration_are_created(tmp_path: Path) -> No
 
     assert instruments == [
         ("000688", "科创50指数"),
-        ("159205", "创业板ETF东财"),
+        ("159622", "创新药ETF东财"),
+        ("159915", "创业板ETF易方达"),
         ("159941", "纳指ETF广发"),
         ("399006", "创业板指数"),
+        ("512010", "医药ETF易方达"),
         ("512690", "鹏华酒ETF"),
         ("512800", "华宝银行ETF"),
+        ("516150", "稀土ETF嘉实"),
         ("518600", "广发黄金ETF"),
         ("589850", "科创50ETF东财"),
         ("NDX", "纳斯达克100指数"),
     ]
-    assert len(weekly_plans) == 3
+    assert len(weekly_plans) == 1
     assert all(plan.amount == Decimal("150.00") and plan.frequency == "weekly" for plan in weekly_plans)
     assert strategy.enabled is True
     assert settings
@@ -718,7 +721,7 @@ def test_default_instruments_and_configuration_are_created(tmp_path: Path) -> No
     assert configs["strategy_config.json"]["minimum_holding_ratio"] == 0.2
     assert [item["code"] for item in configs["watchlist.json"]["instruments"]] == [
         "589850",
-        "159205",
+        "159915",
         "159941",
     ]
 
@@ -732,3 +735,39 @@ def test_default_config_creation_does_not_overwrite_existing_file(tmp_path: Path
     ensure_default_configs(config_directory)
 
     assert app_config.read_text(encoding="utf-8") == '{"language": "custom"}'
+
+
+def test_initialize_database_replaces_legacy_159205_without_reusing_quotes(tmp_path: Path) -> None:
+    database = tmp_path / "data" / "investment_lab.db"
+    config_directory = tmp_path / "config"
+    initialize_database(database, config_directory)
+
+    engine = create_database_engine(database)
+    with Session(engine) as session, session.begin():
+        instrument = session.scalar(select(Instrument).where(Instrument.code == "159915"))
+        assert instrument is not None
+        instrument.code = "159205"
+        instrument.name = "创业板ETF东财"
+        session.add(
+            MarketPrice(
+                instrument_id=instrument.id,
+                trade_date=date(2020, 1, 2),
+                timeframe="daily",
+                open_price=Decimal("1.00"),
+                high_price=Decimal("1.02"),
+                low_price=Decimal("0.99"),
+                close_price=Decimal("1.01"),
+                source="LEGACY_TEST",
+            )
+        )
+
+    initialize_database(database, config_directory)
+
+    with Session(engine) as session:
+        replacement = session.scalar(select(Instrument).where(Instrument.code == "159915"))
+        assert replacement is not None
+        assert replacement.name == "创业板ETF易方达"
+        assert session.scalar(select(Instrument).where(Instrument.code == "159205")) is None
+        assert session.scalar(
+            select(func.count()).select_from(MarketPrice).where(MarketPrice.instrument_id == replacement.id)
+        ) == 0

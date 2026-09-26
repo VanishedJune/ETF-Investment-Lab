@@ -1,0 +1,5 @@
+SQLAlchemy>=2.0,<3
+pydantic>=2.0,<3
+numpy>=1.26
+pandas>=1.5
+exchange-calendars>=4.13,<5

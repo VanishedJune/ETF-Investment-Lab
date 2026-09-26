@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 from unittest.mock import patch
@@ -64,8 +64,8 @@ def test_v342_schema_is_exact_append_only_idempotent_and_versioned(tmp_path: Pat
     engine = _version21_database(tmp_path)
     with engine.connect() as connection:
         before = _old_table_fingerprint(connection)
-    assert run_migrations(engine) == SCHEMA_VERSION == 22
-    assert run_migrations(engine) == 22
+    assert run_migrations(engine) == SCHEMA_VERSION
+    assert run_migrations(engine) == SCHEMA_VERSION
     with engine.connect() as connection:
         tables = {
             str(row[0])
@@ -75,7 +75,10 @@ def test_v342_schema_is_exact_append_only_idempotent_and_versioned(tmp_path: Pat
         }
         assert {name for name in tables if name.startswith("v342_")} == set(V342_TABLES)
         assert _old_table_fingerprint(connection) == before
-        assert connection.exec_driver_sql("PRAGMA user_version").scalar_one() == 22
+        assert (
+            connection.exec_driver_sql("PRAGMA user_version").scalar_one()
+            == SCHEMA_VERSION
+        )
         assert connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one() == 1
         run_sql = connection.exec_driver_sql(
             "SELECT sql FROM sqlite_master WHERE name='v342_policy_runs'"

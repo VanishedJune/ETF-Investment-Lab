@@ -27,7 +27,7 @@ const emit = defineEmits<{
 }>();
 
 const markets: ActiveInstrumentCode[] = ["399006", "159941"];
-const names: Record<ActiveInstrumentCode, string> = {
+const names: Record<string, string> = {
   "399006": "创业板指数",
   "159941": "广发纳斯达克100ETF",
 };

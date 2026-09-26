@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
@@ -144,8 +144,8 @@ def test_schema_19_migration_is_idempotent_and_does_not_rewrite_v32_rows(
         return statement, _parameters
 
     event.listen(engine, "before_cursor_execute", capture_statement, retval=True)
-    assert run_migrations(engine) == SCHEMA_VERSION == 22
-    assert run_migrations(engine) == 22
+    assert run_migrations(engine) == SCHEMA_VERSION
+    assert run_migrations(engine) == SCHEMA_VERSION
     event.remove(engine, "before_cursor_execute", capture_statement)
     with engine.connect() as connection:
         after = connection.execute(
@@ -160,7 +160,10 @@ def test_schema_19_migration_is_idempotent_and_does_not_rewrite_v32_rows(
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             )
         }
-        assert connection.execute(text("PRAGMA user_version")).scalar_one() == 22
+        assert (
+            connection.execute(text("PRAGMA user_version")).scalar_one()
+            == SCHEMA_VERSION
+        )
     assert after == before
     assert V33_TABLES <= table_names
     assert not [

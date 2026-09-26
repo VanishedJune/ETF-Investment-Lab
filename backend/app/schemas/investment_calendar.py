@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
-InstrumentCode = Literal["399006", "159941"]
+# Calendar entries are deliberately independent of the model pipeline.  Keep
+# the complete chart/ETF catalog here so every shipped AI-assistant instrument
+# can be recorded even though none of them triggers inference.
+# Syntax here, authoritative slot/ledger membership in the service.
+InstrumentCode = Annotated[str, Field(pattern=r"^(?:399006|[15]\d{5})$")]
 PositionDirection = Literal["increase", "decrease"]
 
 

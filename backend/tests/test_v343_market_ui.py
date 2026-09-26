@@ -17,7 +17,8 @@ from backend.app.models.models import (
     MarketPrice,
     V33InstrumentRole,
 )
-from backend.app.services.instrument_universe import DISPLAY_ONLY_CODES
+from backend.app.services.instrument_universe import DISPLAY_ONLY_CODES, MODEL_MARKETS
+from backend.app.services.indicator_service import IndicatorService
 from backend.app.services.market_calendar import ExchangeCalendarProvider
 from backend.app.services.v343_market_ui_service import (
     V343MarketUIError,
@@ -27,6 +28,7 @@ from backend.app.services.v343_market_ui_service import (
 )
 from backend.web import (
     V33ModelActionRequest,
+    _provisional_indicator_row,
     _provisional_period_row,
     analyze_v343_model,
     v343_analysis_run,
@@ -38,7 +40,7 @@ class _Calendar:
         return [start] if start == end else [start, end]
 
 
-def test_display_only_etfs_are_seeded_without_plans_or_model_roles(tmp_path: Path) -> None:
+def test_data_only_etfs_are_seeded_without_new_plans_or_new_model_roles(tmp_path: Path) -> None:
     database = tmp_path / "data" / "investment_lab.db"
     initialize_database(database, tmp_path / "config")
     sessions = create_session_factory(database)
@@ -55,22 +57,26 @@ def test_display_only_etfs_are_seeded_without_plans_or_model_roles(tmp_path: Pat
             .select_from(InvestmentPlan)
             .where(InvestmentPlan.instrument_id.in_(instrument_ids))
         )
-        role_count = session.scalar(
-            select(func.count())
-            .select_from(V33InstrumentRole)
-            .where(V33InstrumentRole.instrument_id.in_(instrument_ids))
+        role_codes = set(
+            session.scalars(
+                select(Instrument.code)
+                .join(V33InstrumentRole, V33InstrumentRole.instrument_id == Instrument.id)
+                .where(Instrument.id.in_(instrument_ids))
+            )
         )
 
     assert {row.code for row in instruments} == DISPLAY_ONLY_CODES
     assert all((row.extra_data or {}).get("role") == "display_only" for row in instruments)
     assert all((row.extra_data or {}).get("model_eligible") is False for row in instruments)
     assert plan_count == 0
-    assert role_count == 0
+    # 159941 keeps its frozen V3.3 audit role, but the expanded data-only ETF
+    # catalog must not create any new training/model role.
+    assert role_codes == (DISPLAY_ONLY_CODES & MODEL_MARKETS)
 
 
-def test_v343_model_adapter_rejects_all_display_only_codes(tmp_path: Path) -> None:
+def test_v343_model_adapter_rejects_nonlegacy_display_only_codes(tmp_path: Path) -> None:
     service = V343MarketUIService(lambda: None, calendar=_Calendar())  # type: ignore[arg-type]
-    for code in DISPLAY_ONLY_CODES:
+    for code in DISPLAY_ONLY_CODES - MODEL_MARKETS:
         with pytest.raises(V343MarketUIError):
             service.validate_market(code)
 
@@ -80,9 +86,13 @@ def test_display_only_etfs_have_real_exchange_calendar_bindings() -> None:
 
     for code in DISPLAY_ONLY_CODES:
         metadata = calendar.metadata(code)
-        assert metadata["target_exchange"] == "XSHG"
         assert metadata["schedule_name"] == "XSHG"
-        assert metadata["equivalent_mainland_schedule_proxy"] is False
+        if code.startswith("1"):
+            assert metadata["target_exchange"] == "XSHE"
+            assert metadata["equivalent_mainland_schedule_proxy"] is True
+        else:
+            assert metadata["target_exchange"] == "XSHG"
+            assert metadata["equivalent_mainland_schedule_proxy"] is False
 
 
 def test_historical_dif_derivatives_do_not_bridge_missing_periods() -> None:
@@ -208,6 +218,44 @@ def test_current_week_overlay_is_read_only_and_sums_daily_volume() -> None:
     assert overlay["volume"] == Decimal("30000")
     assert overlay["is_complete"] is False
     assert overlay["period_status"] == "INCOMPLETE_CURRENT_PERIOD"
+
+
+def test_current_week_overlay_has_matching_indicator_row() -> None:
+    def market_row(day: date, close: str, volume: str = "100") -> SimpleNamespace:
+        value = Decimal(close)
+        return SimpleNamespace(
+            trade_date=day,
+            open_price=value,
+            high_price=value + Decimal("1"),
+            low_price=value - Decimal("1"),
+            close_price=value,
+            adjusted_close_price=None,
+            volume=Decimal(volume),
+            volume_multiplier=1,
+            turnover=Decimal("10"),
+            source="TEST",
+        )
+
+    completed = [market_row(date(2026, 7, 31), "100")]
+    daily = [
+        market_row(date(2026, 8, 3), "101"),
+        market_row(date(2026, 8, 4), "102"),
+        market_row(date(2026, 8, 5), "103"),
+    ]
+    indicator = _provisional_indicator_row(
+        IndicatorService(lambda: None),  # type: ignore[arg-type]
+        "518600",
+        "weekly",
+        daily,  # type: ignore[arg-type]
+        completed,  # type: ignore[arg-type]
+    )
+
+    assert indicator is not None
+    assert indicator["date"] == date(2026, 8, 5)
+    assert all(
+        field in indicator
+        for field in ("dif", "dea", "macd_histogram", "dif_first_change")
+    )
 
 
 def test_v343_analysis_queues_then_composes_frozen_forecast_without_training() -> None:

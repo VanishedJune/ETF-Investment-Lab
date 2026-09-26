@@ -1,11 +1,29 @@
-/** Markets that can be selected for current research and position records. */
-export type ActiveInstrumentCode = "399006" | "159941";
+/** Data-only chart/calendar instruments shipped with the desktop build. */
+export type ActiveInstrumentCode =
+  | "399006"
+  | "159941"
+  | "159915"
+  | "518600"
+  | "512800"
+  | "512690"
+  | "512010"
+  | "159622"
+  | "516150"
+  | "517520"
+  | "515220"
+  | "159611"
+  | (string & {});
 export type ModelInstrumentCode = ActiveInstrumentCode;
 export type ResearchInstrumentCode =
   | ModelInstrumentCode
+  | "159915"
   | "518600"
   | "512800"
-  | "512690";
+  | "512690"
+  | "512010"
+  | "159622"
+  | "516150"
+  | (string & {});
 /** V3.2 is immutable audit history; NDX remains its original benchmark key. */
 export type LegacyV32InstrumentCode = "399006" | "NDX";
 export type InstrumentCode = ResearchInstrumentCode | LegacyV32InstrumentCode;
@@ -636,18 +654,48 @@ export interface V34AnalysisRun {
 }
 
 export const legendColors = Object.freeze({
-  priceUp: "#d9553f",
-  priceDown: "#14836d",
-  volume: "#668b96",
-  dif: "#12687e",
-  dea: "#d88b2c",
-  macdPositive: "#d9553f",
-  macdNegative: "#14836d",
-  difFirstChange: "#7b4ca0",
-  ma5: "#8c5d49",
-  ma10: "#6c769e",
-  ma20: "#7a6a3a",
+  priceUp: "#d64b4b",
+  priceDown: "#27845a",
+  volume: "#64748b",
+  volumeIncrease: "#d64b4b",
+  volumeDecrease: "#27845a",
+  dif: "#52789c",
+  dea: "#a57738",
+  macdPositive: "#d64b4b",
+  macdNegative: "#27845a",
+  difFirstChange: "#807096",
+  ma5: "#ae794b",
+  ma10: "#52789c",
+  ma20: "#97718f",
 });
+
+export type VolumeBarDatum = {
+  value: number;
+  itemStyle: { color: string; opacity: number };
+} | null;
+
+/**
+ * Color each real volume bar by its change from the preceding real period.
+ * Missing sparse-axis slots do not reset the comparison.  The first real bar
+ * and unchanged volume remain neutral because neither has a direction.
+ */
+export function volumeChangeBarData(
+  values: readonly (number | null | undefined)[],
+  opacity = 0.76,
+): VolumeBarDatum[] {
+  let previous: number | null = null;
+  return values.map((raw) => {
+    if (raw === null || raw === undefined || !Number.isFinite(raw)) return null;
+    const value = Number(raw);
+    const color = previous === null || value === previous
+      ? legendColors.volume
+      : value > previous
+        ? legendColors.volumeIncrease
+        : legendColors.volumeDecrease;
+    previous = value;
+    return { value, itemStyle: { color, opacity } };
+  });
+}
 
 export interface NormalizedSeries {
   dates: string[];

@@ -1,4 +1,4 @@
-"""Windows desktop entrypoint for the packaged V3.4-13W Investment Lab."""
+"""Windows desktop entrypoint for the packaged V3.7 data-only Investment Lab."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from urllib.request import urlopen
 
 # Keep the V3.2 mutex name for cross-version exclusion: an older installed
 # build and V3.4 must not write the same local database concurrently.
-APP_TITLE = "双市场投资研究台 V3.4-13W"
+APP_TITLE = "ETF Investment Lab V3.7 · Data Only"
 MUTEX_NAME = "Local\\ETFInvestmentLabV32SingleInstance"
 ERROR_ALREADY_EXISTS = 183
 WEBVIEW2_CLIENT_GUID = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
@@ -173,7 +173,65 @@ def _initialize_runtime(home: Path) -> None:
     initialize_database(home / "data" / "investment_lab.db", home / "config")
 
 
+def _check_schema_compatibility(home: Path, *, notify: bool = True) -> bool:
+    """Refuse to open a database that was upgraded by a newer application."""
+
+    import sqlite3
+
+    from backend.app.database.migrations import SCHEMA_VERSION as APP_SCHEMA_VERSION
+
+    database = home / "data" / "investment_lab.db"
+    status_file = home / "data" / "startup-status.json"
+    if not database.is_file():
+        return True
+    try:
+        connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+        try:
+            db_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        finally:
+            connection.close()
+    except (sqlite3.Error, OSError) as error:
+        status_file.write_text(
+            json.dumps(
+                {
+                    "status": "SCHEMA_CHECK_ERROR",
+                    "detail": str(error),
+                    "app_schema_version": APP_SCHEMA_VERSION,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        return False
+    if db_version > APP_SCHEMA_VERSION:
+        status_file.write_text(
+            json.dumps(
+                {
+                    "status": "SCHEMA_MISMATCH",
+                    "database_schema_version": db_version,
+                    "app_schema_version": APP_SCHEMA_VERSION,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        if notify:
+            _message(
+                "数据库已由更新版本的程序升级（schema "
+                f"{db_version} > 当前程序 {APP_SCHEMA_VERSION}）。\n"
+                "请使用配套的新版程序打开，不要用旧版覆盖。",
+                error=True,
+            )
+        return False
+    return True
+
+
 def _run_desktop(home: Path) -> int:
+    from backend.app.services.webview_profile import (
+        cleanup_profiles,
+        write_owner_marker,
+    )
+
     version = _webview2_version()
     if version is None:
         _message(
@@ -185,12 +243,36 @@ def _run_desktop(home: Path) -> int:
 
     # The GUI is the only mode that initializes/migrates the application DB.
     # A missing WebView2 runtime is detected before that first write.
+    if not _check_schema_compatibility(home):
+        return 66
     _initialize_runtime(home)
+    import sqlite3
+
+    try:
+        connection = sqlite3.connect(f"file:{home / 'data' / 'investment_lab.db'}?mode=ro", uri=True)
+        try:
+            db_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        finally:
+            connection.close()
+    except (sqlite3.Error, OSError):
+        db_version = None
+    (home / "data" / "startup-status.json").write_text(
+        json.dumps(
+            {"status": "OK", "database_schema_version": db_version},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
 
     import uvicorn
     import webview
     from backend.web import app
 
+    data_dir = home / "data"
+    # The cross-version mutex is already held here, so no other InvestmentLab
+    # desktop instance can be using one of these profiles.  Keep the newest
+    # confirmed-stale profile as a recovery fallback until this run succeeds.
+    cleanup_profiles(data_dir, retain_newest_stale=True)
     listener = _reserve_loopback_socket()
     port = int(listener.getsockname()[1])
     url = f"http://127.0.0.1:{port}"
@@ -239,7 +321,23 @@ def _run_desktop(home: Path) -> int:
                 server.should_exit = True
 
         window.events.closed += stop_server
-        webview.start(gui="edgechromium", debug=False, private_mode=False)
+        # Keep this desktop instance out of the shared WebView2 profile.  The
+        # default profile can be locked by another Edge/WebView2 application
+        # (or by a previously crashed review process), which makes
+        # CoreWebView2Initialization fail with 0x800700AA.  A per-process
+        # directory keeps startup deterministic while the application data
+        # itself remains in the SQLite database under ``home / data``.
+        webview_storage = data_dir / f"webview2-{os.getpid()}"
+        write_owner_marker(
+            webview_storage,
+            launcher_path=Path(sys.executable if getattr(sys, "frozen", False) else __file__),
+        )
+        webview.start(
+            gui="edgechromium",
+            debug=False,
+            private_mode=False,
+            storage_path=str(webview_storage),
+        )
         return 0
     finally:
         if server is not None:
@@ -248,9 +346,43 @@ def _run_desktop(home: Path) -> int:
             server_thread.join(timeout=15)
         listener.close()
         port_file.unlink(missing_ok=True)
+        # WebView2 child processes can release files slightly after the window
+        # closes.  Removal is retry-based and failures never mask app shutdown.
+        cleanup_profiles(
+            data_dir,
+            keep_profile=locals().get("webview_storage"),
+            retain_newest_stale=False,
+        )
 
 
 def main(arguments: Sequence[str] | None = None) -> int:
+    args = list(sys.argv[1:] if arguments is None else arguments)
+    if len(args) == 2 and args[0] == '--check-data-ui':
+        # Read-only packaged smoke check: no lifespan, migration, model, or GUI.
+        import sqlite3
+        home, resources = _application_home(), _resource_home()
+        os.environ['INVESTMENT_LAB_HOME'] = str(home)
+        os.environ['INVESTMENT_LAB_RESOURCE_ROOT'] = str(resources)
+        try:
+            from backend.app.schemas.investment_calendar import PositionEventCreate
+            from backend.app.services.instrument_universe import AI_ASSISTANT_ETFS
+            from backend.web import app
+            index = resources / 'frontend/dist/index.html'
+            markup = index.read_text(encoding='utf-8')
+            assert '/assets/index.js' in markup
+            assert (resources / 'frontend/dist/assets/index.js').is_file()
+            with sqlite3.connect((home / 'data/investment_lab.db').as_uri() + '?mode=ro', uri=True) as conn:
+                rows = conn.execute('SELECT instrument_code,slot_order FROM v351_instrument_slots WHERE active=1 ORDER BY slot_order').fetchall()
+            assert [row[0] for row in rows] == list(AI_ASSISTANT_ETFS)
+            PositionEventCreate(instrument_code='515220', direction='increase', operation_date='2026-09-26', change_percent=5)
+            report = {'status': 'passed', 'slots': rows, 'bundled_frontend': True,
+                      'backend_routes': len(app.routes), 'database_mode': 'read_only', 'gui_tested': False}
+            result = 0
+        except Exception as error:
+            report = {'status': 'failed', 'error': str(error)}
+            result = 1
+        Path(args[1]).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
+        return result
     if os.name != "nt":
         raise RuntimeError("桌面版仅支持Windows。")
     try:

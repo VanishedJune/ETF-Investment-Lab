@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+import json
 import logging
 from pathlib import Path
 import re
-from threading import RLock
+from threading import Lock, RLock
 from typing import Any, Iterable, Mapping
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -35,6 +36,7 @@ from backend.app.errors import (
     PublicValidationError,
 )
 from backend.app.forecasting import HistoricalSimilarityForecaster
+from backend.app.indicators.calculator import PricePoint
 from backend.app.models.models import (
     AppSetting,
     DataUpdateLog,
@@ -45,6 +47,7 @@ from backend.app.models.models import (
     SimulationAccount,
     StrategyDefinition,
     StrategySignal,
+    V351InstrumentSlot,
 )
 from backend.app.schemas.real_account import (
     RealAccountCreate,
@@ -53,6 +56,7 @@ from backend.app.schemas.real_account import (
     RealTransactionUpdate,
 )
 from backend.app.schemas.investment_calendar import PositionEventCreate, PositionEventUpdate
+from backend.app.schemas.market import ProviderStatus
 from backend.app.schemas.simulation import (
     InvestmentPlanCreate,
     InvestmentPlanUpdate,
@@ -72,9 +76,11 @@ from backend.app.services.comparison_service import ComparisonService
 from backend.app.services.csv_import import CsvImportService
 from backend.app.services.indicator_service import IndicatorService
 from backend.app.services.instrument_universe import (
+    CALENDAR_INSTRUMENT_CODES,
     CHART_INSTRUMENTS,
     DISPLAY_ONLY_CODES,
     MODEL_MARKETS,
+    is_etf_code,
 )
 from backend.app.services.investment_calendar_service import InvestmentCalendarService
 from backend.app.services.market_calendar import ExchangeCalendarProvider
@@ -107,6 +113,9 @@ from backend.app.services.v343_market_ui_service import (
     V343MarketUIError,
     V343MarketUIService,
 )
+from backend.app.services.akshare_resources import akshare_resource_status
+from backend.app.api.v351 import router as v351_router
+from backend.app.services.v351_slot_service import V351SlotService, seed_default_slots
 from backend.app.services.weekly_analysis_service import (
     WeeklyAnalysisUnavailable,
     build_weekly_analysis_service,
@@ -121,6 +130,51 @@ from backend.app.weekly_analysis.repository import (
 
 
 logger = logging.getLogger(__name__)
+_MARKET_REFRESH_LOCKS_GUARD = RLock()
+_MARKET_REFRESH_LOCKS: dict[str, Lock] = {}
+
+
+def _market_refresh_lock(instrument_code: str) -> Lock:
+    with _MARKET_REFRESH_LOCKS_GUARD:
+        return _MARKET_REFRESH_LOCKS.setdefault(instrument_code, Lock())
+
+
+def _read_app_setting(request: Request, key: str, default: Any = None) -> Any:
+    from backend.app.models.models import AppSetting
+
+    sessions = getattr(request.app.state, "sessions", None)
+    if sessions is None:
+        return default
+    with sessions() as session:
+        row = session.scalar(select(AppSetting).where(AppSetting.key == key))
+        return row.value if row is not None else default
+
+
+def _write_app_setting(
+    request: Request,
+    key: str,
+    value: Any,
+    *,
+    category: str = "general",
+) -> None:
+    from backend.app.models.models import AppSetting
+
+    sessions = getattr(request.app.state, "sessions", None)
+    if sessions is None:
+        return
+    with sessions() as session, session.begin():
+        row = session.scalar(select(AppSetting).where(AppSetting.key == key))
+        if row is None:
+            session.add(
+                AppSetting(
+                    key=key,
+                    value=value,
+                    category=category,
+                    description=key,
+                )
+            )
+        else:
+            row.value = value
 
 
 class WeeklyRunRequest(BaseModel):
@@ -186,7 +240,17 @@ def _build_application_runtime() -> _ApplicationRuntime:
     # Upgrade only incomplete persisted chart payloads.  This is local and
     # deterministic: it never downloads data and never touches frozen model,
     # forecast, evaluation, calibrator, or Champion rows.
-    for chart_instrument in sorted(CHART_INSTRUMENTS):
+    # The data-only panel exposes every calendar ETF.  Rebuild only stale
+    # indicator payloads; this does not invoke any model or forecast service.
+    with factory() as session:
+        active_slot_codes = set(
+            session.scalars(
+                select(V351InstrumentSlot.instrument_code).where(
+                    V351InstrumentSlot.active.is_(True)
+                )
+            ).all()
+        )
+    for chart_instrument in sorted(CALENDAR_INSTRUMENT_CODES | active_slot_codes):
         indicators.recalculate_stale_timeframes(chart_instrument)
     v33_data = V33DataService(factory)
     v33_public_sources = V33PublicSourcesService(v33_data)
@@ -242,26 +306,15 @@ def _build_application_runtime() -> _ApplicationRuntime:
         factory,
         calendar=exchange_calendar,
     )
-    # Startup performs only the eligibility check.  A market with a new
-    # complete week can queue exactly one incremental training task; an
-    # unbootstrapped market remains untouched until its historical run exists.
-    v32_training.submit_due_incrementals()
-    v33_runtime.recover_interrupted_runs()
-    v34_runtime.recover_interrupted_runs()
-    v341_runtime.recover_interrupted_runs()
-    for target_market in ("399006", "159941"):
-        if v33_runtime.champion(target_market) is not None:
-            v33_runtime.start_incremental(target_market)
-        if v34_runtime.champion(target_market) is not None:
-            v34_runtime.start_incremental(target_market)
-        if (
-            v341_runtime.champion(target_market) is not None
-            and v341_runtime.incremental_due(target_market)
-        ):
-            v341_runtime.start_incremental(target_market)
+    v351_slots = V351SlotService(factory)
+    with factory() as session, session.begin():
+        seed_default_slots(session)
+    # V3.7 is a data-only desktop build.  Do not recover, bootstrap, or queue
+    # any model/AI task during application startup; the chart and calendar are
+    # the only active workflow.
     return _ApplicationRuntime(
         task_manager=task_manager,
-        shutdown_values=(task_manager, v32_training, v33_runtime, v34_runtime, v341_runtime),
+        shutdown_values=(task_manager,),
         state_values={
             "root": root,
             "sessions": factory,
@@ -292,6 +345,7 @@ def _build_application_runtime() -> _ApplicationRuntime:
             "v341_runtime": v341_runtime,
             "v342_policy": v342_policy,
             "v343_market_ui": v343_market_ui,
+            "v351_slots": v351_slots,
         },
     )
 
@@ -333,6 +387,47 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# V3.7 is deliberately a pure market-data desktop build.  Keep the legacy
+# tables for audit/history compatibility, but make old training, inference,
+# AI and forecast endpoints unavailable so a stale client cannot start them.
+_DATA_ONLY_BLOCKED_PREFIXES = (
+    "/api/v2/analysis",
+    "/api/v3.1",
+    "/api/v3.2",
+    "/api/v33",
+    "/api/v34",
+    "/api/v341",
+    "/api/v342",
+    "/api/v343",
+    "/api/v37",
+    "/api/deepseek",
+)
+_DATA_ONLY_BLOCKED_V351_PREFIXES = (
+    "/api/v351/status",
+    "/api/v351/challenges",
+    "/api/v351/forecast",
+    "/api/v351/strategy",
+    "/api/v351/simulation",
+    "/api/v351/champions",
+)
+
+
+@app.middleware("http")
+async def data_only_endpoint_guard(request: Request, call_next):
+    path = request.url.path
+    if path.startswith(_DATA_ONLY_BLOCKED_PREFIXES) or path.startswith(
+        _DATA_ONLY_BLOCKED_V351_PREFIXES
+    ):
+        return JSONResponse(
+            status_code=404,
+            content={
+                "detail": "V3.7 data-only build: AI、训练、推理与预测功能已移除。",
+            },
+        )
+    return await call_next(request)
+
+app.include_router(v351_router)
 
 
 @app.exception_handler(ValueError)
@@ -722,12 +817,14 @@ def _aggregate_market_timeframes(
     *,
     weekly_result=None,
     as_of: date | None = None,
+    changed_start_date: date | None = None,
 ) -> dict[str, object] | object:
     """Publish periods through the market service's injected exchange calendar."""
     return _service(request, "market").aggregate_periods(
         instrument_code,
         weekly_result=weekly_result,
         as_of=as_of,
+        changed_start_date=changed_start_date,
     )
 
 
@@ -832,10 +929,91 @@ def _provisional_period_row(
     }
 
 
+def _provisional_indicator_row(
+    indicator_service: IndicatorService,
+    instrument_code: str,
+    timeframe: str,
+    daily_rows: list[MarketPrice],
+    completed_rows: list[MarketPrice],
+) -> dict[str, object] | None:
+    """Calculate indicators for the visible, not-yet-complete period.
+
+    Period aggregation deliberately does not persist a partial week/month.  The
+    price endpoint exposes that aggregate as a read-only overlay, so the chart
+    indicator endpoint must expose the matching DIF/DEA/MACD row as well.  The
+    calculation reuses the persisted completed periods plus the overlay and is
+    never written back to SQLite.
+    """
+
+    if timeframe not in {"weekly", "monthly"}:
+        return None
+    provisional = _provisional_period_row(
+        daily_rows,
+        completed_rows,
+        timeframe,
+        volume_available=instrument_code != "NDX",
+    )
+    if provisional is None:
+        return None
+    provisional_date = provisional.get("date")
+    if not isinstance(provisional_date, date):
+        return None
+
+    def stored_point(row: MarketPrice) -> PricePoint:
+        close = row.adjusted_close_price or row.close_price
+        volume = (
+            row.volume * Decimal(row.volume_multiplier)
+            if instrument_code != "NDX" and row.volume is not None
+            else None
+        )
+        assert close is not None
+        return PricePoint(trade_date=row.trade_date, close=close, volume=volume)
+
+    close = provisional.get("close")
+    if close is None:
+        return None
+    volume = provisional.get("volume")
+    price_points = [stored_point(row) for row in completed_rows]
+    price_points.append(
+        PricePoint(
+            trade_date=provisional_date,
+            close=close if isinstance(close, Decimal) else Decimal(str(close)),
+            volume=(
+                volume if isinstance(volume, Decimal) else Decimal(str(volume))
+                if volume is not None
+                else None
+            ),
+        )
+    )
+    computation = indicator_service.calculator.calculate(tuple(price_points), timeframe)
+    snapshot = next(
+        (
+            candidate
+            for candidate in reversed(computation.snapshots)
+            if candidate.trade_date == provisional_date
+        ),
+        None,
+    )
+    if snapshot is None:
+        return None
+    payload = indicator_service._payload(snapshot.values, snapshot.metadata)
+    return {
+        "date": snapshot.trade_date,
+        **payload["values"],
+        "metadata": payload["metadata"],
+    }
+
+
 @app.get("/api/health")
 def health(request: Request) -> object:
     root = request.app.state.root
-    return _json({"status": "ok", "mode": "local_only", "database": "data/investment_lab.db", "frontend_built": (root / "frontend" / "dist" / "index.html").exists()})
+    return _json({
+        "status": "ok",
+        "mode": "local_only",
+        "market_refresh_mode": "ONLINE_INCREMENTAL_WITH_LOCAL_CACHE_FALLBACK",
+        "database": "data/investment_lab.db",
+        "frontend_built": (root / "frontend" / "dist" / "index.html").exists(),
+    })
 
 
 @app.get("/api/agent-iterations/{instrument_code}")
@@ -905,10 +1083,17 @@ def delete_investment_calendar_entry(
 
 @app.get("/api/instruments")
 def instruments(request: Request) -> object:
+    from backend.app.services.instrument_universe import calendar_codes, current_slot_rows
     with request.app.state.sessions() as session:
-        rows = session.scalars(select(Instrument).order_by(Instrument.code)).all()
-        rows = [row for row in rows if row.code in {"399006", "159941"}]
-        return _json([_instrument_dict(row) for row in rows])
+        slots = current_slot_rows(session)
+        ranks = {row.instrument_code: row.slot_order for row in slots}
+        allowed = calendar_codes(session)
+        rows = {row.code: row for row in session.scalars(select(Instrument))}
+        return _json([
+            {**_instrument_dict(rows[code]), "slot_order": ranks.get(code),
+             "is_current_slot": code in ranks}
+            for code in allowed if code in rows
+        ])
 
 
 @app.get("/api/dashboard")
@@ -988,20 +1173,85 @@ def prices(request: Request, instrument_code: str, timeframe: str = "daily") -> 
     return _json({"instrument": _instrument_dict(instrument), "timeframe": timeframe, "rows": payload_rows, "source": payload_rows[-1]["source"] if payload_rows else None, "demo": is_demo, "updated_at": rows[-1].updated_at if rows else None, "volume_availability": "available" if volume_available else "not_available_for_direct_index", "current_period_status": provisional["period_status"] if provisional else "COMPLETE"})
 
 
-@app.post("/api/market/{instrument_code}/refresh")
-def refresh_market(request: Request, instrument_code: str) -> object:
+def _refresh_market_impl(request: Request, instrument_code: str) -> object:
+    refresh_lock = _market_refresh_lock(instrument_code)
+    if not refresh_lock.acquire(blocking=False):
+        raise HTTPException(
+            status_code=409,
+            detail=f"{instrument_code} 行情正在刷新，请等待当前任务完成。",
+        )
+    try:
+        return _refresh_market_impl_unlocked(request, instrument_code)
+    finally:
+        refresh_lock.release()
+
+
+def _refresh_market_impl_unlocked(request: Request, instrument_code: str) -> object:
     service = _service(request, "market")
-    if instrument_code not in CHART_INSTRUMENTS | {"NDX"}:
+    if instrument_code not in CHART_INSTRUMENTS | {"NDX"} and not is_etf_code(
+        instrument_code
+    ):
         raise HTTPException(
             status_code=422,
-            detail="Market refresh supports only the five chart instruments and the read-only NDX benchmark",
+            detail=(
+                "Market refresh supports chart instruments, dynamic ETF slots, "
+                "and the read-only NDX benchmark"
+            ),
         )
     provider = (
         AkShareEtfResearchProvider()
-        if instrument_code == "159941" or instrument_code in DISPLAY_ONLY_CODES
+        if instrument_code == "159941"
+        or instrument_code in DISPLAY_ONLY_CODES
+        or is_etf_code(instrument_code)
         else AkShareIndexProvider()
     )
     latest_daily = service.latest_daily_date(instrument_code)
+    expected_cutoff = None
+    calendar_error = None
+    expected_resolver = getattr(service, "expected_latest_daily_date", None)
+    if callable(expected_resolver):
+        try:
+            expected_cutoff = expected_resolver(
+                instrument_code,
+                as_of=datetime.now(timezone.utc),
+            )
+        except Exception as error:  # calendar failure must not block a real download
+            calendar_error = f"{type(error).__name__}: {error}"
+
+    if (
+        expected_cutoff is not None
+        and latest_daily is not None
+        and latest_daily >= expected_cutoff
+    ):
+        return _json(
+            {
+                "status": "success",
+                "refresh_outcome": "ALREADY_FRESH",
+                "source": "LOCAL_DATABASE",
+                "cutoff_date": latest_daily,
+                "local_cutoff_before": latest_daily,
+                "expected_cutoff": expected_cutoff,
+                "local_cutoff_after": latest_daily,
+                "network_requested": False,
+                "requested_start_date": None,
+                "verified_fresh": True,
+                "cache_used": False,
+                "error": None,
+                "warnings": [],
+                "records_received": 0,
+                "records_written": 0,
+                "records_added": 0,
+                "records_updated": 0,
+                "records_skipped": 0,
+                "aggregation": None,
+                "aggregation_status": "not_needed",
+                "indicator_recalculation": {},
+                "real_accounts_recalculated": 0,
+                "weekly_volume_strategy": "DAILY_SUM",
+                "calendar_error": calendar_error,
+            }
+        )
+
     overlap_start = (
         date(2014, 2, 18)
         if instrument_code == "NDX"
@@ -1011,52 +1261,78 @@ def refresh_market(request: Request, instrument_code: str) -> object:
             else None
         )
     )
-    providers = (
-        [YahooDirectIndexProvider(), provider]
-        if instrument_code == "NDX"
-        else [provider]
+    providers = [YahooDirectIndexProvider(), provider] if instrument_code == "NDX" else [provider]
+    result = service.update_from_providers(
+        instrument_code, providers, overlap_start, None
     )
-    # The weekly-volume overlay validates all-or-nothing coverage against the
-    # complete daily baseline, so its source request must cover full history
-    # even when the daily price refresh uses a short overlap.
-    weekly_result = provider.fetch_weekly(instrument_code, None, None)
-    if instrument_code == "159941":
-        v33_result = _service(request, "v33_data").refresh_159941(
-            start_date=overlap_start,
-            end_date=None,
-        )
-        result_succeeded = v33_result.status == "success"
-        cutoff_date = v33_result.data_as_of
-        payload: dict[str, object] = asdict(v33_result)
-        payload.update(
-            {
-                "cutoff_date": cutoff_date,
-                "cache_used": False,
-                "demo": False,
-                "error": None if result_succeeded else "; ".join(v33_result.issues),
-            }
-        )
-    else:
-        result = service.update_from_providers(
-            instrument_code, providers, overlap_start, None
-        )
-        result_succeeded = bool(result.records)
-        cutoff_date = result.cutoff_date
-        payload = result.model_dump()
+    # A cached response still contains rows so the chart can remain usable,
+    # but it is not a successful refresh.  Do not recalculate periods/accounts
+    # or report a fresh cutoff when every upstream provider failed.
+    result_succeeded = (
+        bool(result.records)
+        and result.status is ProviderStatus.SUCCESS
+        and result.error is None
+        and not result.cache_used
+    )
+    cutoff_date = result.cutoff_date
+    payload = result.model_dump()
     aggregation_result: object | None = None
     indicator_results: dict[str, dict[str, object]] = {}
-    if result_succeeded:
+    data_changed = result.records_written > 0
+    if result_succeeded and data_changed:
+        # Weekly/monthly OHLCV is derived from the canonical daily series.  A
+        # refresh rebuilds only periods touched by the overlap window; it does
+        # not issue a second full-history weekly network request.
         aggregation_result = _aggregate_market_timeframes(
             request,
             instrument_code,
-            weekly_result=weekly_result,
+            weekly_result=None,
             as_of=cutoff_date,
+            changed_start_date=overlap_start,
         )
         indicator_results = _recalculate_chart_timeframes(
             request,
             instrument_code,
             ("daily", *_successful_aggregation_timeframes(aggregation_result)),
         )
+    local_cutoff_after = service.latest_daily_date(instrument_code)
+    verified_fresh = (
+        expected_cutoff is not None
+        and local_cutoff_after is not None
+        and local_cutoff_after >= expected_cutoff
+    )
+    if not result_succeeded:
+        refresh_outcome = "UPSTREAM_FAILED"
+        refresh_error = result.error or "上游行情接口未返回可用记录"
+    elif expected_cutoff is None:
+        refresh_outcome = "UPDATED_UNVERIFIED"
+        refresh_error = calendar_error or "无法确定交易所最新应有交易日"
+    elif verified_fresh:
+        refresh_outcome = "UPDATED"
+        refresh_error = None
+    else:
+        refresh_outcome = "STILL_STALE"
+        after_text = (
+            local_cutoff_after.isoformat()
+            if local_cutoff_after is not None
+            else "无本地数据"
+        )
+        refresh_error = (
+            f"上游数据仅更新至 {after_text}，"
+            f"仍未达到应有交易日 {expected_cutoff.isoformat()}"
+        )
+
+    payload["refresh_outcome"] = refresh_outcome
+    payload["refresh_error"] = refresh_error
+    payload["local_cutoff_before"] = latest_daily
+    payload["expected_cutoff"] = expected_cutoff
+    payload["local_cutoff_after"] = local_cutoff_after
+    payload["cutoff_date"] = local_cutoff_after or cutoff_date
+    payload["network_requested"] = True
+    payload["requested_start_date"] = overlap_start
+    payload["verified_fresh"] = verified_fresh
+    payload["calendar_error"] = calendar_error
+    payload["weekly_volume_strategy"] = "DAILY_SUM"
     payload["aggregation"] = aggregation_result
     payload["aggregation_status"] = (
         _aggregation_status(aggregation_result)
@@ -1064,14 +1340,100 @@ def refresh_market(request: Request, instrument_code: str) -> object:
         else "not_attempted"
     )
     payload["indicator_recalculation"] = indicator_results
-    # A successful local quote refresh also completes previously saved real
-    # trades whose market/indicator context was marked as pending.
-    payload["real_accounts_recalculated"] = (
-        _service(request, "real_accounts").recalculate_all_accounts()
-        if result_succeeded and instrument_code in MODEL_MARKETS
-        else 0
-    )
+    # V3.7 is a data-only desktop.  Refreshing a chart must not invoke the
+    # removed real-account/model pipelines; those legacy tables remain
+    # untouched for audit compatibility.
+    payload["real_accounts_recalculated"] = 0
     return _json(payload)
+
+
+@app.post("/api/market/{instrument_code}/refresh")
+def refresh_market(request: Request, instrument_code: str) -> object:
+    try:
+        response = _refresh_market_impl(request, instrument_code)
+    except HTTPException as exc:
+        # A duplicate click is a normal in-flight conflict, not evidence that
+        # the active refresh or its upstream source failed.
+        if exc.status_code == 409:
+            raise
+        raise
+    except Exception as exc:  # noqa: BLE001 - degraded status must still be persisted
+        previous = _read_app_setting(request, "market_refresh_status", {})
+        _write_app_setting(
+            request,
+            "market_refresh_status",
+            {
+                "status": "MARKET_REFRESH_DEGRADED",
+                "cutoff_date": None,
+                "last_error": f"{type(exc).__name__}: {exc}",
+                "last_success_at": (
+                    previous.get("last_success_at") if isinstance(previous, dict) else None
+                ),
+            },
+        )
+        raise
+    body = (
+        json.loads(response.body)
+        if isinstance(response, Response)
+        else dict(response)
+    )
+    refresh_outcome = body.get("refresh_outcome")
+    ok = (
+        refresh_outcome in {"ALREADY_FRESH", "UPDATED"}
+        if refresh_outcome is not None
+        else body.get("error") is None and body.get("status", "success") != "error"
+    )
+    previous = _read_app_setting(request, "market_refresh_status", {})
+    refresh_status = "MARKET_REFRESH_OK" if ok else "MARKET_REFRESH_DEGRADED"
+    status_value = {
+        "status": refresh_status,
+        "instrument_code": instrument_code,
+        "refresh_outcome": refresh_outcome,
+        "cutoff_date": body.get("cutoff_date"),
+        "local_cutoff_before": body.get("local_cutoff_before"),
+        "expected_cutoff": body.get("expected_cutoff"),
+        "local_cutoff_after": body.get("local_cutoff_after"),
+        "network_requested": body.get("network_requested"),
+        "verified_fresh": body.get("verified_fresh"),
+        "model_processed_anchor": None,
+        "last_error": None if ok else body.get("refresh_error") or body.get("error"),
+        "last_success_at": (
+            datetime.now(timezone.utc).isoformat()
+            if ok
+            else (previous.get("last_success_at") if isinstance(previous, dict) else None)
+        ),
+    }
+    _write_app_setting(request, "market_refresh_status", status_value)
+    status_by_instrument = _read_app_setting(
+        request,
+        "market_refresh_status_by_instrument",
+        {},
+    )
+    if not isinstance(status_by_instrument, dict):
+        status_by_instrument = {}
+    status_by_instrument = dict(status_by_instrument)
+    status_by_instrument[instrument_code] = status_value
+    _write_app_setting(
+        request,
+        "market_refresh_status_by_instrument",
+        status_by_instrument,
+    )
+    body["market_refresh_status"] = status_value["status"]
+    body["akshare_resource_status"] = akshare_resource_status()
+    body["last_successful_refresh_at"] = status_value["last_success_at"]
+    return _json(body)
+
+
+@app.get("/api/market/refresh-status")
+def market_refresh_status(request: Request) -> object:
+    return _json(
+        {
+            "market_refresh_status": _read_app_setting(
+                request, "market_refresh_status", {"status": "MARKET_REFRESH_OK"}
+            ),
+            "akshare_resource_status": akshare_resource_status(),
+        }
+    )
 
 
 @app.post("/api/market/{instrument_code}/aggregate")
@@ -1179,7 +1541,55 @@ def indicator_rows(request: Request, instrument_code: str, timeframe: str = "dai
             .where(IndicatorRecord.instrument_id == instrument.id, IndicatorRecord.timeframe == timeframe)
             .order_by(IndicatorRecord.indicator_date)
         ).all()
-    return _json([{"date": row.indicator_date, **dict(row.indicator_values.get("values", {})), "metadata": row.indicator_values.get("metadata", {})} for row in rows])
+        daily_rows = (
+            list(
+                session.scalars(
+                    select(MarketPrice)
+                    .where(
+                        MarketPrice.instrument_id == instrument.id,
+                        MarketPrice.timeframe == "daily",
+                    )
+                    .order_by(MarketPrice.trade_date)
+                ).all()
+            )
+            if timeframe in {"weekly", "monthly"}
+            else []
+        )
+        completed_prices = (
+            list(
+                session.scalars(
+                    select(MarketPrice)
+                    .where(
+                        MarketPrice.instrument_id == instrument.id,
+                        MarketPrice.timeframe == timeframe,
+                    )
+                    .order_by(MarketPrice.trade_date)
+                ).all()
+            )
+            if timeframe in {"weekly", "monthly"}
+            else []
+        )
+    payload = [
+        {
+            "date": row.indicator_date,
+            **dict((row.indicator_values or {}).get("values", {})),
+            "metadata": (row.indicator_values or {}).get("metadata", {}),
+        }
+        for row in rows
+    ]
+    if timeframe in {"weekly", "monthly"}:
+        provisional = _provisional_indicator_row(
+            _service(request, "indicators"),
+            instrument_code,
+            timeframe,
+            daily_rows,
+            completed_prices,
+        )
+        if provisional is not None and (
+            not payload or str(payload[-1]["date"]) != str(provisional["date"])
+        ):
+            payload.append(provisional)
+    return _json(payload)
 
 
 @app.get("/api/plans")
@@ -1598,8 +2008,6 @@ def v2_position_events(
     instrument_code: str | None = None,
 ) -> object:
     try:
-        if instrument_code is not None:
-            _v33_symbol(instrument_code)
         rows = _service(request, "investment_calendar").list_entries(
             instrument_code
         )

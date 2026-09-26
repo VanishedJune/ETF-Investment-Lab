@@ -3066,3 +3066,1420 @@ class V342StrategyBacktestPoint(Base):
     fixed_dca_equity: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
     event_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     point_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class V35TrainingProfile(Base):
+    """Frozen executable V3.5 protocol profile for one market chain."""
+
+    __tablename__ = "v35_training_profiles"
+    __table_args__ = (
+        UniqueConstraint(
+            "protocol_version", "model_market", "profile_hash",
+            name="uq_v35_training_profile",
+        ),
+        CheckConstraint(
+            "training_window_mode IN ('ROLLING_520W', 'EXPANDING_AVAILABLE_HISTORY')",
+            name="ck_v35_training_window_mode",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    protocol_version: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    model_market: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    training_window_mode: Mapped[str] = mapped_column(String(40), nullable=False)
+    formal_training_weeks: Mapped[int] = mapped_column(Integer, nullable=False)
+    minimum_training_weeks: Mapped[int] = mapped_column(Integer, nullable=False)
+    feature_warmup_weeks: Mapped[int] = mapped_column(Integer, nullable=False)
+    feature_set_name: Mapped[str] = mapped_column(String(32), nullable=False)
+    feature_set_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    ordered_feature_names_json: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    feature_manifest_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    horizon_weeks: Mapped[int] = mapped_column(Integer, nullable=False)
+    profile_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    profile_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V35FeatureSnapshot(Base):
+    """Point-in-time V3.5 feature snapshot isolated from earlier stores."""
+
+    __tablename__ = "v35_feature_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "protocol_version", "model_market", "forecast_anchor_date",
+            "feature_manifest_hash",
+            name="uq_v35_feature_snapshot",
+        ),
+        CheckConstraint(
+            "source_max_date <= forecast_anchor_date",
+            name="ck_v35_feature_snapshot_no_future",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    protocol_version: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    model_market: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    target_instrument_id: Mapped[int] = mapped_column(
+        ForeignKey("instruments.id"), nullable=False, index=True
+    )
+    forecast_anchor_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    cutoff_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    source_max_date: Mapped[date] = mapped_column(Date, nullable=False)
+    feature_manifest_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    feature_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    daily_sequence_json: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    provenance_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    leakage_audit_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V35ModelPackage(Base):
+    """Complete MODEL_PACKAGE: prediction parameters plus strategy defaults."""
+
+    __tablename__ = "v35_model_packages"
+    __table_args__ = (
+        UniqueConstraint(
+            "protocol_version", "model_market", "version",
+            name="uq_v35_model_package_version",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    protocol_version: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    model_market: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    version: Mapped[str] = mapped_column(String(80), nullable=False)
+    package_kind: Mapped[str] = mapped_column(String(24), nullable=False)
+    parent_package_id: Mapped[str | None] = mapped_column(
+        ForeignKey("v35_model_packages.id"), index=True
+    )
+    prediction_model_id: Mapped[str] = mapped_column(
+        ForeignKey("v35_model_versions.id"), nullable=False, index=True
+    )
+    policy_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    feature_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    promotion_rule_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    strategy_config_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    effective_from_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    package_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V35ModelVersion(Base):
+    """Persisted V3.5 8-week Ridge state."""
+
+    __tablename__ = "v35_model_versions"
+    __table_args__ = (
+        UniqueConstraint(
+            "protocol_version", "model_market", "version",
+            name="uq_v35_model_version",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    protocol_version: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    model_market: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    version: Mapped[str] = mapped_column(String(80), nullable=False)
+    parent_model_id: Mapped[str | None] = mapped_column(
+        ForeignKey("v35_model_versions.id"), index=True
+    )
+    profile_id: Mapped[str] = mapped_column(
+        ForeignKey("v35_training_profiles.id"), nullable=False, index=True
+    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    trained_through_date: Mapped[date] = mapped_column(Date, nullable=False)
+    effective_from_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    feature_anchor_max_date: Mapped[date] = mapped_column(Date, nullable=False)
+    label_observed_through_date: Mapped[date] = mapped_column(Date, nullable=False)
+    raw_matured_sample_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    effective_independent_sample_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    horizon_weeks: Mapped[int] = mapped_column(Integer, nullable=False)
+    ridge_alpha: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    parameters_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    metrics_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    promotion_gate_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    health_status: Mapped[str] = mapped_column(String(40), nullable=False)
+    parameter_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V35TrainingRun(Base):
+    __tablename__ = "v35_training_runs"
+    __table_args__ = (
+        CheckConstraint("horizon_weeks = 8", name="ck_v35_training_horizon"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    protocol_version: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    model_market: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    profile_id: Mapped[str | None] = mapped_column(
+        ForeignKey("v35_training_profiles.id"), index=True
+    )
+    run_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    current_stage: Mapped[str] = mapped_column(String(64), nullable=False)
+    horizon_weeks: Mapped[int] = mapped_column(Integer, nullable=False)
+    requested_through_anchor: Mapped[date | None] = mapped_column(Date)
+    maximum_backlog_weeks: Mapped[int] = mapped_column(Integer, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    result_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    error_message: Mapped[str | None] = mapped_column(Text)
+
+
+class V35RandomPlan(Base):
+    __tablename__ = "v35_random_plans"
+    __table_args__ = (
+        UniqueConstraint(
+            "protocol_version", "model_market", "plan_hash",
+            name="uq_v35_random_plan_hash",
+        ),
+        CheckConstraint("scenario_count >= 1000", name="ck_v35_random_plan_scenarios"),
+    )
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    protocol_version: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    model_market: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    plan_scope: Mapped[str] = mapped_column(String(32), nullable=False)
+    plan_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    seed: Mapped[int] = mapped_column(Integer, nullable=False)
+    scenario_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    residual_pool_identity: Mapped[str] = mapped_column(String(64), nullable=False)
+    residual_pool_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload_codec: Mapped[str] = mapped_column(String(32), nullable=False)
+    plan_payload_zlib: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    plan_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V35ProbabilityCalibrator(Base):
+    __tablename__ = "v35_probability_calibrators"
+    __table_args__ = (
+        UniqueConstraint(
+            "protocol_version", "model_market", "horizon_weeks", "version",
+            name="uq_v35_probability_calibrator",
+        ),
+        CheckConstraint(
+            "horizon_weeks IN (4, 8)", name="ck_v35_calibrator_horizon"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(160), primary_key=True)
+    protocol_version: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    model_market: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    horizon_weeks: Mapped[int] = mapped_column(Integer, nullable=False)
+    version: Mapped[str] = mapped_column(String(80), nullable=False)
+    model_family: Mapped[str] = mapped_column(String(80), nullable=False)
+    residual_schema_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    fit_through_date: Mapped[date] = mapped_column(Date, nullable=False)
+    effective_from_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    raw_sample_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    effective_sample_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    temperature: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    metrics_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    calibrator_params_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    calibration_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V35Forecast(Base):
+    __tablename__ = "v35_forecasts"
+    __table_args__ = (
+        UniqueConstraint(
+            "protocol_version", "model_market", "forecast_anchor_date",
+            name="uq_v35_forecast_anchor",
+        ),
+        CheckConstraint("horizon_weeks = 8", name="ck_v35_forecast_horizon"),
+        CheckConstraint("scenario_count >= 1000", name="ck_v35_forecast_scenarios"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    protocol_version: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    model_market: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    target_instrument_id: Mapped[int] = mapped_column(
+        ForeignKey("instruments.id"), nullable=False, index=True
+    )
+    feature_snapshot_id: Mapped[str] = mapped_column(
+        ForeignKey("v35_feature_snapshots.id"), nullable=False, index=True
+    )
+    model_version_id: Mapped[str] = mapped_column(
+        ForeignKey("v35_model_versions.id"), nullable=False, index=True
+    )
+    model_package_id: Mapped[str] = mapped_column(
+        ForeignKey("v35_model_packages.id"), nullable=False, index=True
+    )
+    random_plan_id: Mapped[str] = mapped_column(
+        ForeignKey("v35_random_plans.id"), nullable=False, index=True
+    )
+    forecast_anchor_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    label_end_date: Mapped[date | None] = mapped_column(Date)
+    horizon_weeks: Mapped[int] = mapped_column(Integer, nullable=False)
+    maturity_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    scenario_seed: Mapped[int] = mapped_column(Integer, nullable=False)
+    scenario_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    random_plan_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    expected_path_json: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    representative_ohlcv_json: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    indicator_path_json: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    price_quantiles_json: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    horizon_probabilities_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    thresholds_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    calibrator_versions_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    residual_pool_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    model_reliability_score: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    reliability_components_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    health_status: Mapped[str] = mapped_column(String(40), nullable=False)
+    ood_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    data_source_provenance: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    forecast_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V35ForecastEvaluation(Base):
+    __tablename__ = "v35_forecast_evaluations"
+    __table_args__ = (
+        UniqueConstraint(
+            "forecast_id", "horizon_weeks", "evaluation_version",
+            name="uq_v35_forecast_evaluation",
+        ),
+        CheckConstraint(
+            "horizon_weeks IN (4, 8)", name="ck_v35_evaluation_horizon"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    forecast_id: Mapped[int] = mapped_column(
+        ForeignKey("v35_forecasts.id"), nullable=False, index=True
+    )
+    horizon_weeks: Mapped[int] = mapped_column(Integer, nullable=False)
+    evaluation_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    evaluation_available_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    actual_return: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    actual_class: Mapped[str] = mapped_column(String(16), nullable=False)
+    metrics_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    evaluation_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V35ForecastCalibratorLink(Base):
+    __tablename__ = "v35_forecast_calibrators"
+    __table_args__ = (
+        UniqueConstraint(
+            "forecast_id", "horizon_weeks", name="uq_v35_forecast_calibrator_horizon"
+        ),
+        CheckConstraint(
+            "horizon_weeks IN (4, 8)", name="ck_v35_forecast_calibrator_horizon"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    forecast_id: Mapped[int] = mapped_column(
+        ForeignKey("v35_forecasts.id"), nullable=False, index=True
+    )
+    calibrator_id: Mapped[str] = mapped_column(
+        ForeignKey("v35_probability_calibrators.id"), nullable=False, index=True
+    )
+    horizon_weeks: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V35ResidualRecord(Base):
+    __tablename__ = "v35_residual_records"
+    __table_args__ = (
+        UniqueConstraint("forecast_id", name="uq_v35_residual_forecast"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    forecast_id: Mapped[int] = mapped_column(
+        ForeignKey("v35_forecasts.id"), nullable=False, index=True
+    )
+    model_market: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    matured_at: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    model_family: Mapped[str] = mapped_column(String(80), nullable=False)
+    residual_schema_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    return_unit: Mapped[str] = mapped_column(String(40), nullable=False)
+    prediction_path_json: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    actual_path_json: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    residual_path_json: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    standardized_residual_json: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    source_sigma: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    residual_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V35StrategySnapshot(Base):
+    __tablename__ = "v35_strategy_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "protocol_version", "model_market", "forecast_anchor_date",
+            "model_package_id",
+            name="uq_v35_strategy_snapshot",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    protocol_version: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    model_market: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    forecast_id: Mapped[int] = mapped_column(
+        ForeignKey("v35_forecasts.id"), nullable=False, index=True
+    )
+    model_package_id: Mapped[str] = mapped_column(
+        ForeignKey("v35_model_packages.id"), nullable=False, index=True
+    )
+    forecast_anchor_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    dif_trend_state: Mapped[str] = mapped_column(String(48), nullable=False)
+    confirmation_status: Mapped[str] = mapped_column(String(48), nullable=False)
+    strategy_score: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    base_target_position_pp: Mapped[int] = mapped_column(Integer, nullable=False)
+    state_position_cap_pp: Mapped[int] = mapped_column(Integer, nullable=False)
+    final_target_position_pp: Mapped[int] = mapped_column(Integer, nullable=False)
+    strategy_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    data_source_provenance: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    strategy_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V35PositionDecision(Base):
+    __tablename__ = "v35_position_decisions"
+    __table_args__ = (
+        UniqueConstraint(
+            "strategy_snapshot_id", "batch_number",
+            name="uq_v35_position_decision_batch",
+        ),
+        CheckConstraint(
+            "position_pp BETWEEN 0 AND 100 AND position_pp % 5 = 0",
+            name="ck_v35_position_grid",
+        ),
+        CheckConstraint(
+            "batch_change_pp BETWEEN -100 AND 100 AND batch_change_pp % 5 = 0",
+            name="ck_v35_batch_grid",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    strategy_snapshot_id: Mapped[int] = mapped_column(
+        ForeignKey("v35_strategy_snapshots.id"), nullable=False, index=True
+    )
+    forecast_id: Mapped[int] = mapped_column(
+        ForeignKey("v35_forecasts.id"), nullable=False, index=True
+    )
+    batch_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    action: Mapped[str] = mapped_column(String(24), nullable=False)
+    position_pp: Mapped[int] = mapped_column(Integer, nullable=False)
+    batch_change_pp: Mapped[int] = mapped_column(Integer, nullable=False)
+    target_position_pp: Mapped[int] = mapped_column(Integer, nullable=False)
+    execution_anchor_date: Mapped[date | None] = mapped_column(Date)
+    condition_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    decision_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V35SimAccount(Base):
+    """One standardized 8-week or continuous simulated account."""
+
+    __tablename__ = "v35_sim_accounts"
+    __table_args__ = (
+        UniqueConstraint(
+            "model_market", "scope", "window_start_date", "model_package_id",
+            name="uq_v35_sim_account",
+        ),
+        CheckConstraint(
+            "scope IN ('STANDARD_8W', 'CONTINUOUS')", name="ck_v35_sim_scope"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(160), primary_key=True)
+    protocol_version: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    model_market: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    scope: Mapped[str] = mapped_column(String(24), nullable=False)
+    window_start_date: Mapped[date | None] = mapped_column(Date, index=True)
+    window_end_date: Mapped[date | None] = mapped_column(Date)
+    model_package_id: Mapped[str] = mapped_column(
+        ForeignKey("v35_model_packages.id"), nullable=False, index=True
+    )
+    initial_capital: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    ending_equity: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    current_cash: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    current_position_pp: Mapped[int] = mapped_column(Integer, nullable=False)
+    net_profit: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    net_return: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    max_drawdown: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    average_position_pp: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    trade_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    turnover: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    transaction_cost: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    no_action_window: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    up_market_participation: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    down_market_defense: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    result_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    held_shares: Mapped[Decimal | None] = mapped_column(MONEY)
+    average_cost: Mapped[Decimal | None] = mapped_column(MONEY)
+    sellable_shares: Mapped[Decimal | None] = mapped_column(MONEY)
+    account_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V35SimLedger(Base):
+    __tablename__ = "v35_sim_ledger"
+    __table_args__ = (
+        UniqueConstraint(
+            "account_id", "sequence", name="uq_v35_sim_ledger_sequence"
+        ),
+        CheckConstraint(
+            "position_pp BETWEEN 0 AND 100 AND position_pp % 5 = 0",
+            name="ck_v35_sim_ledger_position_grid",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[str] = mapped_column(
+        ForeignKey("v35_sim_accounts.id"), nullable=False, index=True
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    anchor_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    position_pp: Mapped[int] = mapped_column(Integer, nullable=False)
+    market_return: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    account_return: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    equity: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    cash: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    trade_action: Mapped[str] = mapped_column(String(24), nullable=False)
+    traded_pp: Mapped[int] = mapped_column(Integer, nullable=False)
+    transaction_cost: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    event_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    held_shares: Mapped[Decimal | None] = mapped_column(MONEY)
+    average_cost: Mapped[Decimal | None] = mapped_column(MONEY)
+    sellable_shares: Mapped[Decimal | None] = mapped_column(MONEY)
+    ledger_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V35SimEvaluation(Base):
+    """Matured standardized 8-week account outcome used for promotion."""
+
+    __tablename__ = "v35_sim_evaluations"
+    __table_args__ = (
+        UniqueConstraint(
+            "account_id", "window_end_date", name="uq_v35_sim_evaluation"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[str] = mapped_column(
+        ForeignKey("v35_sim_accounts.id"), nullable=False, index=True
+    )
+    model_market: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    model_package_id: Mapped[str] = mapped_column(
+        ForeignKey("v35_model_packages.id"), nullable=False, index=True
+    )
+    window_start_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    window_end_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    ending_equity: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    net_profit: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    net_return: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    max_drawdown: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    average_position_pp: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    trade_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    turnover: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    transaction_cost: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    no_action_window: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    up_market_participation: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    down_market_defense: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    evaluation_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V35ContinuousAccount(Base):
+    """Per-market continuous equity curve summary."""
+
+    __tablename__ = "v35_continuous_accounts"
+    __table_args__ = (
+        UniqueConstraint(
+            "protocol_version", "model_market", name="uq_v35_continuous_account"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    protocol_version: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    model_market: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    model_package_id: Mapped[str] = mapped_column(
+        ForeignKey("v35_model_packages.id"), nullable=False, index=True
+    )
+    initial_capital: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    ending_equity: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    cumulative_return: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    annualized_return: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    max_drawdown: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    average_position_pp: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    turnover: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    buy_hold_return: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    fixed_30_return: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    cash_return: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    state_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    held_shares: Mapped[Decimal | None] = mapped_column(MONEY)
+    average_cost: Mapped[Decimal | None] = mapped_column(MONEY)
+    sellable_shares: Mapped[Decimal | None] = mapped_column(MONEY)
+    account_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V35Challenge(Base):
+    """One challenge round (prediction or strategy) at an anchor."""
+
+    __tablename__ = "v35_challenges"
+    __table_args__ = (
+        UniqueConstraint(
+            "protocol_version", "model_market", "anchor_date",
+            "challenger_family",
+            name="uq_v35_challenge_round",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    protocol_version: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    model_market: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    anchor_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    challenger_family: Mapped[str] = mapped_column(String(24), nullable=False)
+    champion_package_id: Mapped[str] = mapped_column(
+        ForeignKey("v35_model_packages.id"), nullable=False, index=True
+    )
+    candidate_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    result_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V35ChallengerWindow(Base):
+    """One shadow 8-week account window for a challenger package."""
+
+    __tablename__ = "v35_challenger_windows"
+    __table_args__ = (
+        UniqueConstraint(
+            "challenge_id", "candidate_package_id", "window_start_date",
+            name="uq_v35_challenger_window",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    challenge_id: Mapped[str] = mapped_column(
+        ForeignKey("v35_challenges.id"), nullable=False, index=True
+    )
+    candidate_package_id: Mapped[str] = mapped_column(
+        ForeignKey("v35_model_packages.id"), nullable=False, index=True
+    )
+    sim_account_id: Mapped[str] = mapped_column(
+        ForeignKey("v35_sim_accounts.id"), nullable=False, index=True
+    )
+    window_start_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    window_end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    net_return: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    net_profit: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    max_drawdown: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    average_position_pp: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    trade_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    no_action_window: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V35Promotion(Base):
+    __tablename__ = "v35_promotions"
+    __table_args__ = (
+        UniqueConstraint(
+            "protocol_version", "model_market", "challenge_id",
+            "candidate_package_id",
+            name="uq_v35_promotion",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    protocol_version: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    model_market: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    challenge_id: Mapped[str] = mapped_column(
+        ForeignKey("v35_challenges.id"), nullable=False, index=True
+    )
+    champion_package_id: Mapped[str] = mapped_column(
+        ForeignKey("v35_model_packages.id"), nullable=False, index=True
+    )
+    candidate_package_id: Mapped[str] = mapped_column(
+        ForeignKey("v35_model_packages.id"), nullable=False, index=True
+    )
+    challenger_family: Mapped[str] = mapped_column(String(24), nullable=False)
+    evaluation_window_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    promotion_decision: Mapped[str] = mapped_column(String(24), nullable=False)
+    promotion_reason: Mapped[str] = mapped_column(String(160), nullable=False)
+    effective_from_date: Mapped[date | None] = mapped_column(Date)
+    excess_profit: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    excess_return: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    metrics_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    promotion_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V35HealthSnapshot(Base):
+    __tablename__ = "v35_health_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "protocol_version", "model_market", "anchor_date",
+            name="uq_v35_health_anchor",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    protocol_version: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    model_market: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    anchor_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    model_version_id: Mapped[str] = mapped_column(
+        ForeignKey("v35_model_versions.id"), nullable=False, index=True
+    )
+    health_status: Mapped[str] = mapped_column(String(40), nullable=False)
+    diagnostics_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    reliability_score: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    health_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V35TrainingIteration(Base):
+    __tablename__ = "v35_training_iterations"
+    __table_args__ = (
+        UniqueConstraint(
+            "protocol_version", "model_market", "anchor_date",
+            name="uq_v35_iteration_anchor",
+        ),
+        UniqueConstraint(
+            "protocol_version", "model_market", "weekly_iteration_number",
+            name="uq_v35_iteration_number",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    protocol_version: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    training_run_id: Mapped[str] = mapped_column(
+        ForeignKey("v35_training_runs.id"), nullable=False, index=True
+    )
+    forecast_id: Mapped[int] = mapped_column(
+        ForeignKey("v35_forecasts.id"), nullable=False, index=True
+    )
+    model_market: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    anchor_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    weekly_iteration_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    forecast_model_id: Mapped[str] = mapped_column(
+        ForeignKey("v35_model_versions.id"), nullable=False, index=True
+    )
+    champion_after_model_id: Mapped[str] = mapped_column(
+        ForeignKey("v35_model_versions.id"), nullable=False, index=True
+    )
+    training_triggered: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    promoted: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    newly_matured_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    raw_matured_sample_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    effective_independent_sample_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    validation_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    completed_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V35BootstrapState(Base):
+    """Per-market V3.5 bootstrap bookkeeping for idempotent resume."""
+
+    __tablename__ = "v35_bootstrap_state"
+    __table_args__ = (
+        UniqueConstraint(
+            "protocol_version", "model_market", name="uq_v35_bootstrap_state"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    protocol_version: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    model_market: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    state: Mapped[str] = mapped_column(String(40), nullable=False)
+    first_formal_anchor: Mapped[date | None] = mapped_column(Date)
+    last_completed_anchor: Mapped[date | None] = mapped_column(Date)
+    last_failed_anchor: Mapped[date | None] = mapped_column(Date)
+    weekly_iteration_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    prediction_challenge_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    strategy_challenge_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    promotion_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    champion_package_id: Mapped[str | None] = mapped_column(
+        ForeignKey("v35_model_packages.id"), index=True
+    )
+    state_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    state_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V35MarketState(Base):
+    """Per-anchor market state, DIF quadrant and durations."""
+
+    __tablename__ = "v35_market_state"
+    __table_args__ = (
+        UniqueConstraint(
+            "protocol_version", "model_market", "anchor_date",
+            name="uq_v35_market_state_anchor",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    protocol_version: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    model_market: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    anchor_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    dif_trend_state: Mapped[str] = mapped_column(String(48), nullable=False)
+    confirmation_status: Mapped[str] = mapped_column(String(48), nullable=False)
+    market_state: Mapped[str] = mapped_column(String(32), nullable=False)
+    state_duration_weeks: Mapped[int] = mapped_column(Integer, nullable=False)
+    dif_state_duration_weeks: Mapped[int] = mapped_column(Integer, nullable=False)
+    details_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    state_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V351InstrumentSlot(Base):
+    """Data-driven ETF slot binding (V3.5.1)."""
+
+    __tablename__ = "v351_instrument_slots"
+    __table_args__ = (
+        UniqueConstraint("slot_id", name="uq_v351_instrument_slot_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    slot_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    slot_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    instrument_code: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    exchange: Mapped[str] = mapped_column(String(16), nullable=False)
+    instrument_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    instrument_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    model_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, index=True)
+    binding_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    bound_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    replaced_from_code: Mapped[str | None] = mapped_column(String(16))
+    replacement_status: Mapped[str] = mapped_column(String(40), nullable=False)
+    data_start_date: Mapped[date | None] = mapped_column(Date)
+    data_end_date: Mapped[date | None] = mapped_column(Date)
+    history_week_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    mature_8w_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    model_status: Mapped[str] = mapped_column(String(40), nullable=False)
+    champion_package_id: Mapped[str | None] = mapped_column(String(160))
+    last_market_update: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V351InstrumentSlotHistory(Base):
+    """Append-only binding history per ETF slot."""
+
+    __tablename__ = "v351_instrument_slot_history"
+    __table_args__ = (
+        UniqueConstraint(
+            "slot_id", "binding_version", name="uq_v351_slot_history_binding"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    slot_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    binding_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    instrument_code: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    action: Mapped[str] = mapped_column(String(24), nullable=False)
+    effective_from: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    effective_to: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V351InstrumentMetadata(Base):
+    """Verified public metadata for a candidate/replacement ETF."""
+
+    __tablename__ = "v351_instrument_metadata"
+    __table_args__ = (
+        UniqueConstraint("instrument_code", name="uq_v351_instrument_metadata"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    instrument_code: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    official_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    exchange: Mapped[str] = mapped_column(String(16), nullable=False)
+    instrument_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    data_source: Mapped[str] = mapped_column(String(64), nullable=False)
+    first_data_date: Mapped[date | None] = mapped_column(Date)
+    last_data_date: Mapped[date | None] = mapped_column(Date)
+    verified_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    metadata_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V351SlotReplacementJob(Base):
+    """Transactional replacement state machine job."""
+
+    __tablename__ = "v351_slot_replacement_jobs"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_v351_replacement_idempotency"),
+    )
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    slot_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    target_code: Mapped[str] = mapped_column(String(16), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(80), nullable=False)
+    state: Mapped[str] = mapped_column(String(40), nullable=False)
+    current_step: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    error_code: Mapped[str | None] = mapped_column(String(80))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    result_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+
+
+class V351SlotModelState(Base):
+    """Per-binding model namespace and status for a slot."""
+
+    __tablename__ = "v351_slot_model_state"
+    __table_args__ = (
+        UniqueConstraint(
+            "slot_id", "binding_version", name="uq_v351_slot_model_state"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    slot_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    binding_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    model_namespace: Mapped[str] = mapped_column(String(80), nullable=False)
+    account_namespace: Mapped[str] = mapped_column(String(80), nullable=False)
+    forecast_namespace: Mapped[str] = mapped_column(String(80), nullable=False)
+    model_status: Mapped[str] = mapped_column(String(40), nullable=False)
+    champion_package_id: Mapped[str | None] = mapped_column(String(160))
+    small_sample_champion: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    prewarming: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    mature_8w_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    last_bootstrap_anchor: Mapped[date | None] = mapped_column(Date)
+    bootstrap_state: Mapped[str] = mapped_column(String(40), nullable=False)
+    state_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V351CandidateEvaluation(Base):
+    """Per-candidate behavior equivalence, rejection reasons and gaps."""
+
+    __tablename__ = "v351_candidate_evaluations"
+    __table_args__ = (
+        UniqueConstraint(
+            "challenge_id", "candidate_package_id",
+            name="uq_v351_candidate_evaluation",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    protocol_version: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        index=True,
+        server_default="V3.5.1_EFFECTIVE_CHALLENGER_AND_DYNAMIC_ETF_SLOTS",
+    )
+    challenge_id: Mapped[str] = mapped_column(
+        ForeignKey("v35_challenges.id"), nullable=False, index=True
+    )
+    candidate_package_id: Mapped[str] = mapped_column(String(160), nullable=False, index=True)
+    model_market: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    challenger_family: Mapped[str] = mapped_column(String(24), nullable=False)
+    effectively_identical: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    equivalence_reason: Mapped[str | None] = mapped_column(Text)
+    forecast_divergence_ratio: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    strategy_score_divergence_ratio: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    base_position_divergence_ratio: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    target_position_divergence_ratio: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    signal_divergence_ratio: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    trade_path_divergence_ratio: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    equity_path_divergence_ratio: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    rejection_reason_codes_json: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    gaps_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    promotion_channel: Mapped[str | None] = mapped_column(String(40))
+    raw_evaluation_window_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    effective_independent_window_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    prediction_quality_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    evaluation_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V351MaintenanceRefresh(Base):
+    """MODEL_MAINTENANCE_REFRESH events (same-config refits)."""
+
+    __tablename__ = "v351_maintenance_refreshes"
+    __table_args__ = (
+        UniqueConstraint(
+            "model_market", "anchor_date", name="uq_v351_maintenance_anchor"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    reason_code: Mapped[str | None] = mapped_column(String(64))
+    model_market: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    anchor_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    from_model_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    to_model_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    from_package_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    to_package_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    decision: Mapped[str] = mapped_column(String(40), nullable=False)
+    reason: Mapped[str] = mapped_column(String(200), nullable=False)
+    metrics_before_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    metrics_after_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    effective_from_date: Mapped[date | None] = mapped_column(Date)
+    refresh_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V36AccountSnapshot(Base):
+    """Per-anchor real account snapshot for V3.6 Champion/Challenger windows."""
+
+    __tablename__ = "v36_account_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "protocol_version", "model_market", "anchor_date",
+            name="uq_v36_account_snapshot_anchor",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    protocol_version: Mapped[str] = mapped_column(
+        String(64), nullable=False, index=True
+    )
+    model_market: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    anchor_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    cash: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    equity: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    position_pp: Mapped[int] = mapped_column(Integer, nullable=False)
+    held_shares: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    average_cost: Mapped[Decimal | None] = mapped_column(MONEY)
+    sellable_shares: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    cooldown_state_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    pending_batches_json: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V36DecisionFunnel(Base):
+    """Per-package decision funnel counts (V3.6 P1)."""
+
+    __tablename__ = "v36_decision_funnel"
+    __table_args__ = (
+        UniqueConstraint(
+            "protocol_version", "model_market", "forecast_anchor_date",
+            "model_package_id",
+            name="uq_v36_decision_funnel",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    protocol_version: Mapped[str] = mapped_column(
+        String(64), nullable=False, index=True
+    )
+    model_market: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    forecast_anchor_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    model_package_id: Mapped[str] = mapped_column(
+        ForeignKey("v35_model_packages.id"), nullable=False, index=True
+    )
+    bull_signal_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    score_pass_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    base_position_positive_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    risk_blocked_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    cooldown_blocked_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    final_position_positive_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    trade_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    actual_position_positive_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    funnel_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V37MultiTimeframeFeature(Base):
+    """V3.7 multi-timeframe branch features (weekly + daily + interactions)."""
+
+    __tablename__ = "v37_multitimeframe_features"
+    __table_args__ = (
+        UniqueConstraint(
+            "protocol_version", "model_market", "forecast_anchor_date",
+            "manifest_version",
+            name="uq_v37_multitimeframe_feature_anchor",
+        ),
+        CheckConstraint(
+            "source_max_date <= forecast_anchor_date",
+            name="ck_v37_multitimeframe_no_future",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    protocol_version: Mapped[str] = mapped_column(
+        String(64), nullable=False, index=True
+    )
+    model_market: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    forecast_anchor_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    source_max_date: Mapped[date] = mapped_column(Date, nullable=False)
+    manifest_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    multi_timeframe_state: Mapped[str] = mapped_column(String(48), nullable=False)
+    weekly_branch_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    daily_branch_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    interaction_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    feature_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V37AiRequest(Base):
+    """One DeepSeek call audit row (frozen, append-only)."""
+
+    __tablename__ = "v37_ai_requests"
+    __table_args__ = (
+        UniqueConstraint(
+            "protocol_version", "model_market", "forecast_anchor_date",
+            "input_hash", "model_name", "prompt_version",
+            "ai_generation_version", "attempt_number",
+            name="uq_v37_ai_request_dedupe",
+        ),
+        CheckConstraint(
+            "attempt_number >= 1",
+            name="ck_v37_ai_request_attempt_number",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    protocol_version: Mapped[str] = mapped_column(
+        String(64), nullable=False, index=True
+    )
+    model_market: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    forecast_anchor_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    model_name: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    model_version: Mapped[str | None] = mapped_column(String(80))
+    prompt_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    ai_generation_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    screening_scope: Mapped[str] = mapped_column(String(32), nullable=False)
+    input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    output_hash: Mapped[str | None] = mapped_column(String(64))
+    raw_response_hash: Mapped[str | None] = mapped_column(String(64))
+    response_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    request_timestamp: Mapped[datetime] = mapped_column(
+        UTCDateTime(), nullable=False
+    )
+    latency_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    token_usage_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    error_detail: Mapped[str | None] = mapped_column(Text)
+    point_in_time_pass: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V37AiForecast(Base):
+    """Validated structured DeepSeek forecast (independent analyst)."""
+
+    __tablename__ = "v37_ai_forecasts"
+    __table_args__ = (
+        UniqueConstraint(
+            "protocol_version", "model_market", "forecast_anchor_date",
+            "ai_generation_version", "model_name", "prompt_version",
+            "screening_scope",
+            name="uq_v37_ai_forecast_anchor",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    protocol_version: Mapped[str] = mapped_column(
+        String(64), nullable=False, index=True
+    )
+    model_market: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    forecast_anchor_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    ai_request_id: Mapped[int] = mapped_column(
+        ForeignKey("v37_ai_requests.id"), nullable=False, index=True
+    )
+    ai_generation_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    model_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    screening_scope: Mapped[str] = mapped_column(String(32), nullable=False)
+    input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    trend_1w: Mapped[str] = mapped_column(String(24), nullable=False)
+    trend_2w: Mapped[str] = mapped_column(String(24), nullable=False)
+    trend_4w: Mapped[str] = mapped_column(String(24), nullable=False)
+    trend_8w: Mapped[str] = mapped_column(String(24), nullable=False)
+    direction_scores_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False
+    )
+    daily_trend: Mapped[str] = mapped_column(String(24), nullable=False)
+    weekly_trend: Mapped[str] = mapped_column(String(24), nullable=False)
+    multi_timeframe_state: Mapped[str] = mapped_column(String(48), nullable=False)
+    risk_level: Mapped[str] = mapped_column(String(16), nullable=False)
+    confidence_raw: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    expected_return_4w: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    expected_return_8w: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    support_distance_pct: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    resistance_distance_pct: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    reason_codes_json: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    structured_result_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False
+    )
+    output_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V37AiEvaluation(Base):
+    """Matured 8-week evaluation of one DeepSeek forecast."""
+
+    __tablename__ = "v37_ai_evaluations"
+    __table_args__ = (
+        UniqueConstraint(
+            "ai_forecast_id", name="uq_v37_ai_evaluation_forecast"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ai_forecast_id: Mapped[int] = mapped_column(
+        ForeignKey("v37_ai_forecasts.id"), nullable=False, index=True
+    )
+    protocol_version: Mapped[str] = mapped_column(
+        String(64), nullable=False, index=True
+    )
+    model_market: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    forecast_anchor_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    evaluation_available_date: Mapped[date] = mapped_column(
+        Date, nullable=False, index=True
+    )
+    direction_hits_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    mae_4w: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    mae_8w: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    brier_4w: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    brier_8w: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    strong_up_recognized: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    strong_down_recognized: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    up_missed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    down_false_alarm: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    metrics_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    evaluation_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V37AiCalibrator(Base):
+    """AI probability calibrator fitted only on matured Forward OOS."""
+
+    __tablename__ = "v37_ai_calibrators"
+    __table_args__ = (
+        UniqueConstraint(
+            "protocol_version", "model_market", "horizon_weeks", "version",
+            name="uq_v37_ai_calibrator",
+        ),
+        CheckConstraint(
+            "horizon_weeks IN (4, 8)", name="ck_v37_ai_calibrator_horizon"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    protocol_version: Mapped[str] = mapped_column(
+        String(64), nullable=False, index=True
+    )
+    model_market: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    horizon_weeks: Mapped[int] = mapped_column(Integer, nullable=False)
+    version: Mapped[str] = mapped_column(String(80), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    raw_sample_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    effective_sample_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    fit_through_date: Mapped[date] = mapped_column(Date, nullable=False)
+    effective_from_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    calibrator_params_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    metrics_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    calibration_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V37AiModelHealth(Base):
+    """Per-anchor AI weight status and Forward-OOS health."""
+
+    __tablename__ = "v37_ai_model_health"
+    __table_args__ = (
+        UniqueConstraint(
+            "protocol_version", "model_market", "anchor_date",
+            name="uq_v37_ai_model_health_anchor",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    protocol_version: Mapped[str] = mapped_column(
+        String(64), nullable=False, index=True
+    )
+    model_market: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    anchor_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(40), nullable=False)
+    forward_oos_window_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    weight_cap_pp: Mapped[int] = mapped_column(Integer, nullable=False)
+    ai_calibration_status: Mapped[str] = mapped_column(String(40), nullable=False)
+    metrics_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    health_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V37FusionConfig(Base):
+    """Deterministic Quant-AI fusion challenger configuration."""
+
+    __tablename__ = "v37_fusion_configs"
+    __table_args__ = (
+        UniqueConstraint(
+            "protocol_version", "model_market", "config_version",
+            name="uq_v37_fusion_config",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    protocol_version: Mapped[str] = mapped_column(
+        String(64), nullable=False, index=True
+    )
+    model_market: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    config_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    local_weight: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    ai_weight: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    conflict_policy: Mapped[str] = mapped_column(String(32), nullable=False)
+    strategy_config_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V37FusionEvaluation(Base):
+    """Matured 8-week comparison of Local, AI and Fusion accounts."""
+
+    __tablename__ = "v37_fusion_evaluations"
+    __table_args__ = (
+        UniqueConstraint(
+            "protocol_version", "model_market", "fusion_config_id",
+            "window_start_date",
+            name="uq_v37_fusion_evaluation",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    protocol_version: Mapped[str] = mapped_column(
+        String(64), nullable=False, index=True
+    )
+    model_market: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    fusion_config_id: Mapped[int] = mapped_column(
+        ForeignKey("v37_fusion_configs.id"), nullable=False, index=True
+    )
+    window_start_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    window_end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    local_equity: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    ai_equity: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    fusion_equity: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    local_net_return: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    ai_net_return: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    fusion_net_return: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    win_vs_local: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    win_vs_ai: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    max_drawdown: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    average_position_pp: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    metrics_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    evaluation_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V37ModelRepairProposal(Base):
+    """DeepSeek reviewer output: a whitelisted local-model repair proposal."""
+
+    __tablename__ = "v37_model_repair_proposals"
+    __table_args__ = (
+        UniqueConstraint(
+            "protocol_version", "model_market", "anchor_date",
+            "proposal_hash",
+            name="uq_v37_model_repair_proposal",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    protocol_version: Mapped[str] = mapped_column(
+        String(64), nullable=False, index=True
+    )
+    model_market: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    anchor_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    trigger: Mapped[str] = mapped_column(String(64), nullable=False)
+    diagnosis: Mapped[str] = mapped_column(String(80), nullable=False)
+    target_layer: Mapped[str] = mapped_column(String(64), nullable=False)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    proposed_change: Mapped[str] = mapped_column(String(80), nullable=False)
+    parameter_changes_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False
+    )
+    expected_effect: Mapped[str] = mapped_column(Text, nullable=False)
+    primary_risk: Mapped[str] = mapped_column(Text, nullable=False)
+    requires_full_replay: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    architecture_change_proposal_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    proposal_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class V37ModelRepairRun(Base):
+    """One LOCAL_REPAIR_CHALLENGER training/replay run."""
+
+    __tablename__ = "v37_model_repair_runs"
+    __table_args__ = (
+        UniqueConstraint(
+            "proposal_id", "challenger_package_id",
+            name="uq_v37_model_repair_run",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    protocol_version: Mapped[str] = mapped_column(
+        String(64), nullable=False, index=True
+    )
+    model_market: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    proposal_id: Mapped[int] = mapped_column(
+        ForeignKey("v37_model_repair_proposals.id"), nullable=False, index=True
+    )
+    challenger_package_id: Mapped[str | None] = mapped_column(
+        ForeignKey("v35_model_packages.id"), index=True
+    )
+    training_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("v35_training_runs.id"), index=True
+    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    validation_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class V37ModelConflict(Base):
+    """Local vs AI consensus/conflict state for one anchor."""
+
+    __tablename__ = "v37_model_conflicts"
+    __table_args__ = (
+        UniqueConstraint(
+            "protocol_version", "model_market", "forecast_anchor_date",
+            name="uq_v37_model_conflict_anchor",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    protocol_version: Mapped[str] = mapped_column(
+        String(64), nullable=False, index=True
+    )
+    model_market: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    forecast_anchor_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    local_forecast_id: Mapped[int | None] = mapped_column(
+        ForeignKey("v35_forecasts.id"), index=True
+    )
+    ai_forecast_id: Mapped[int | None] = mapped_column(
+        ForeignKey("v37_ai_forecasts.id"), index=True
+    )
+    consensus_state: Mapped[str] = mapped_column(String(40), nullable=False)
+    conflict_state: Mapped[str] = mapped_column(String(48), nullable=False)
+    local_up_probability_8w: Mapped[Decimal] = mapped_column(
+        PERCENTAGE, nullable=False
+    )
+    ai_up_probability_8w: Mapped[Decimal] = mapped_column(
+        PERCENTAGE, nullable=False
+    )
+    conflict_score: Mapped[Decimal] = mapped_column(PERCENTAGE, nullable=False)
+    resolution: Mapped[str] = mapped_column(String(32), nullable=False)
+    metrics_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    conflict_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)

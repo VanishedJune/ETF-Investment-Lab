@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from sqlalchemy import Connection, Engine
 
 
-SCHEMA_VERSION = 22
+SCHEMA_VERSION = 29
 
 V2_TABLE_NAMES = (
     "v2_market_data_cache",
@@ -2313,6 +2313,453 @@ def _upgrade_to_version_twenty_two(connection: Connection) -> None:
     _validate_v342_schema(connection)
 
 
+V35_TABLES = (
+    "v35_training_profiles",
+    "v35_feature_snapshots",
+    "v35_model_packages",
+    "v35_model_versions",
+    "v35_training_runs",
+    "v35_random_plans",
+    "v35_probability_calibrators",
+    "v35_forecasts",
+    "v35_forecast_evaluations",
+    "v35_forecast_calibrators",
+    "v35_residual_records",
+    "v35_strategy_snapshots",
+    "v35_position_decisions",
+    "v35_sim_accounts",
+    "v35_sim_ledger",
+    "v35_sim_evaluations",
+    "v35_continuous_accounts",
+    "v35_challenges",
+    "v35_challenger_windows",
+    "v35_promotions",
+    "v35_health_snapshots",
+    "v35_training_iterations",
+    "v35_bootstrap_state",
+    "v35_market_state",
+)
+
+
+def _validate_v35_schema(connection: Connection) -> None:
+    """Validate the isolated append-only V3.5 namespace."""
+
+    existing = {
+        str(row[0])
+        for row in connection.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )
+    }
+    namespace = {name for name in existing if name.startswith("v35_")}
+    if namespace != set(V35_TABLES):
+        raise SchemaVersionError(
+            "V3.5 table namespace differs: "
+            f"expected={sorted(V35_TABLES)} actual={sorted(namespace)}"
+        )
+    required_columns = {
+        "v35_training_profiles": {
+            "protocol_version", "model_market", "horizon_weeks",
+            "feature_manifest_hash", "profile_hash",
+        },
+        "v35_feature_snapshots": {
+            "protocol_version", "model_market", "forecast_anchor_date",
+            "source_max_date", "feature_manifest_hash", "snapshot_hash",
+        },
+        "v35_model_packages": {
+            "protocol_version", "model_market", "prediction_model_id",
+            "strategy_config_json", "package_hash",
+        },
+        "v35_model_versions": {
+            "protocol_version", "model_market", "horizon_weeks",
+            "ridge_alpha", "parameter_hash",
+        },
+        "v35_forecasts": {
+            "protocol_version", "model_market", "forecast_anchor_date",
+            "horizon_weeks", "maturity_status", "forecast_hash",
+        },
+        "v35_strategy_snapshots": {
+            "forecast_id", "model_package_id", "dif_trend_state",
+            "strategy_score", "final_target_position_pp", "strategy_hash",
+        },
+        "v35_position_decisions": {
+            "strategy_snapshot_id", "batch_number", "action",
+            "position_pp", "batch_change_pp", "decision_hash",
+        },
+        "v35_sim_accounts": {
+            "model_market", "scope", "model_package_id", "initial_capital",
+            "ending_equity", "net_return", "max_drawdown", "account_hash",
+        },
+        "v35_sim_ledger": {
+            "account_id", "sequence", "anchor_date", "equity", "ledger_hash",
+        },
+        "v35_sim_evaluations": {
+            "account_id", "window_start_date", "window_end_date",
+            "net_return", "evaluation_hash",
+        },
+        "v35_continuous_accounts": {
+            "model_market", "model_package_id", "ending_equity",
+            "cumulative_return", "account_hash",
+        },
+        "v35_challenges": {
+            "anchor_date", "challenger_family", "champion_package_id", "status",
+        },
+        "v35_challenger_windows": {
+            "challenge_id", "candidate_package_id", "sim_account_id",
+            "window_start_date", "net_return",
+        },
+        "v35_promotions": {
+            "challenge_id", "candidate_package_id", "promotion_decision",
+            "promotion_reason", "promotion_hash",
+        },
+        "v35_health_snapshots": {
+            "anchor_date", "model_version_id", "health_status", "health_hash",
+        },
+        "v35_training_iterations": {
+            "anchor_date", "weekly_iteration_number", "forecast_id",
+            "promoted", "validation_json",
+        },
+        "v35_bootstrap_state": {
+            "model_market", "state", "weekly_iteration_count", "state_hash",
+        },
+        "v35_market_state": {
+            "anchor_date", "dif_trend_state", "confirmation_status",
+            "market_state", "state_hash",
+        },
+    }
+    for table_name in V35_TABLES:
+        table = Base.metadata.tables[table_name]
+        actual_columns = {
+            str(row[1])
+            for row in connection.exec_driver_sql(
+                f"PRAGMA table_info({_quoted(table_name)})"
+            )
+        }
+        expected_names = {column.name for column in table.columns}
+        if set(actual_columns) != expected_names:
+            raise SchemaVersionError(
+                f"V3.5 table {table_name} has an inexact column set"
+            )
+        required = required_columns.get(table_name, set())
+        if not required.issubset(actual_columns):
+            raise SchemaVersionError(
+                f"V3.5 table {table_name} is missing required audit fields"
+            )
+
+
+def _upgrade_to_version_twenty_three(connection: Connection) -> None:
+    """Create V3.5 without selecting or altering any earlier table."""
+
+    for table_name in V35_TABLES:
+        Base.metadata.tables[table_name].create(connection, checkfirst=True)
+    _validate_v35_schema(connection)
+
+
+V351_TABLES = (
+    "v351_instrument_slots",
+    "v351_instrument_slot_history",
+    "v351_instrument_metadata",
+    "v351_slot_replacement_jobs",
+    "v351_slot_model_state",
+    "v351_candidate_evaluations",
+    "v351_maintenance_refreshes",
+)
+
+
+def _validate_v351_schema(connection: Connection) -> None:
+    """Validate the isolated append-only V3.5.1 namespace."""
+
+    existing = {
+        str(row[0])
+        for row in connection.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )
+    }
+    namespace = {name for name in existing if name.startswith("v351_")}
+    if namespace != set(V351_TABLES):
+        raise SchemaVersionError(
+            "V3.5.1 table namespace differs: "
+            f"expected={sorted(V351_TABLES)} actual={sorted(namespace)}"
+        )
+    required_columns = {
+        "v351_instrument_slots": {
+            "slot_id", "slot_order", "instrument_code", "exchange",
+            "instrument_name", "instrument_type", "model_enabled", "active",
+            "binding_version", "bound_at", "replaced_from_code",
+            "replacement_status", "model_status", "champion_package_id",
+        },
+        "v351_instrument_slot_history": {
+            "slot_id", "binding_version", "instrument_code", "action",
+            "effective_from", "effective_to",
+        },
+        "v351_instrument_metadata": {
+            "instrument_code", "official_name", "exchange",
+            "instrument_type", "data_source", "verified_at", "metadata_hash",
+        },
+        "v351_slot_replacement_jobs": {
+            "slot_id", "target_code", "idempotency_key", "state",
+            "current_step", "error_code", "error_message",
+        },
+        "v351_slot_model_state": {
+            "slot_id", "binding_version", "model_namespace",
+            "account_namespace", "forecast_namespace", "model_status",
+            "champion_package_id", "small_sample_champion", "prewarming",
+            "mature_8w_count", "bootstrap_state",
+        },
+        "v351_candidate_evaluations": {
+            "protocol_version", "challenge_id", "candidate_package_id", "effectively_identical",
+            "forecast_divergence_ratio", "target_position_divergence_ratio",
+            "trade_path_divergence_ratio", "rejection_reason_codes_json",
+            "gaps_json", "promotion_channel", "evaluation_hash",
+        },
+        "v351_maintenance_refreshes": {
+            "reason_code", "model_market", "anchor_date", "from_model_id", "to_model_id",
+            "from_package_id", "to_package_id", "decision", "reason",
+            "effective_from_date", "refresh_hash",
+        },
+    }
+    for table_name in V351_TABLES:
+        table = Base.metadata.tables[table_name]
+        actual_columns = {
+            str(row[1])
+            for row in connection.exec_driver_sql(
+                f"PRAGMA table_info({_quoted(table_name)})"
+            )
+        }
+        expected_names = {column.name for column in table.columns}
+        if set(actual_columns) != expected_names:
+            raise SchemaVersionError(
+                f"V3.5.1 table {table_name} has an inexact column set"
+            )
+        required = required_columns.get(table_name, set())
+        if not required.issubset(actual_columns):
+            raise SchemaVersionError(
+                f"V3.5.1 table {table_name} is missing required audit fields"
+            )
+
+
+def _upgrade_to_version_twenty_four(connection: Connection) -> None:
+    """Create V3.5.1 tables without selecting or altering any earlier table."""
+
+    for table_name in V351_TABLES:
+        Base.metadata.tables[table_name].create(connection, checkfirst=True)
+    _validate_v351_schema(connection)
+
+
+def _upgrade_to_version_twenty_five(connection: Connection) -> None:
+    """Add protocol isolation to v351 candidate evaluations (schema 25)."""
+
+    columns = {
+        str(row[1])
+        for row in connection.exec_driver_sql(
+            "PRAGMA table_info(v351_candidate_evaluations)"
+        )
+    }
+    if "protocol_version" not in columns:
+        connection.exec_driver_sql(
+            "ALTER TABLE v351_candidate_evaluations "
+            "ADD COLUMN protocol_version VARCHAR(64) NOT NULL "
+            "DEFAULT 'V3.5.1_EFFECTIVE_CHALLENGER_AND_DYNAMIC_ETF_SLOTS'"
+        )
+    _validate_v351_schema(connection)
+
+
+V36_TABLES = ("v36_account_snapshots", "v36_decision_funnel")
+
+
+def _validate_v36_schema(connection: Connection) -> None:
+    """Validate the isolated V3.6 account-snapshot namespace."""
+
+    existing = {
+        str(row[0])
+        for row in connection.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )
+    }
+    namespace = {name for name in existing if name.startswith("v36_")}
+    if namespace != set(V36_TABLES):
+        raise SchemaVersionError(
+            "V3.6 table namespace differs: "
+            f"expected={sorted(V36_TABLES)} actual={sorted(namespace)}"
+        )
+    for table_name in V36_TABLES:
+        table = Base.metadata.tables[table_name]
+        actual_columns = {
+            str(row[1])
+            for row in connection.exec_driver_sql(
+                f"PRAGMA table_info({_quoted(table_name)})"
+            )
+        }
+        expected_names = {column.name for column in table.columns}
+        if set(actual_columns) != expected_names:
+            raise SchemaVersionError(
+                f"{table_name} has an inexact column set"
+            )
+
+
+def _upgrade_to_version_twenty_six(connection: Connection) -> None:
+    """Add V3.6 account snapshots and maintenance reason codes (schema 26)."""
+
+    Base.metadata.tables["v36_account_snapshots"].create(connection, checkfirst=True)
+    Base.metadata.tables["v36_decision_funnel"].create(connection, checkfirst=True)
+    share_columns = (
+        "held_shares",
+        "average_cost",
+        "sellable_shares",
+    )
+    for table_name in (
+        "v35_sim_accounts",
+        "v35_sim_ledger",
+        "v35_continuous_accounts",
+    ):
+        existing = {
+            str(row[1])
+            for row in connection.exec_driver_sql(
+                f"PRAGMA table_info({_quoted(table_name)})"
+            )
+        }
+        for column in share_columns:
+            if column not in existing:
+                connection.exec_driver_sql(
+                    f"ALTER TABLE {_quoted(table_name)} "
+                    f"ADD COLUMN {column} NUMERIC"
+                )
+    calibrator_columns = {
+        str(row[1])
+        for row in connection.exec_driver_sql(
+            "PRAGMA table_info(v35_probability_calibrators)"
+        )
+    }
+    if "calibrator_params_json" not in calibrator_columns:
+        connection.exec_driver_sql(
+            "ALTER TABLE v35_probability_calibrators "
+            "ADD COLUMN calibrator_params_json JSON"
+        )
+    for table_name, column in (
+        ("v35_forecasts", "data_source_provenance"),
+        ("v35_strategy_snapshots", "data_source_provenance"),
+    ):
+        existing = {
+            str(row[1])
+            for row in connection.exec_driver_sql(
+                f"PRAGMA table_info({_quoted(table_name)})"
+            )
+        }
+        if column not in existing:
+            connection.exec_driver_sql(
+                f"ALTER TABLE {_quoted(table_name)} ADD COLUMN {column} JSON"
+            )
+    maintenance_columns = {
+        str(row[1])
+        for row in connection.exec_driver_sql(
+            "PRAGMA table_info(v351_maintenance_refreshes)"
+        )
+    }
+    if "reason_code" not in maintenance_columns:
+        connection.exec_driver_sql(
+            "ALTER TABLE v351_maintenance_refreshes "
+            "ADD COLUMN reason_code VARCHAR(64)"
+        )
+    _validate_v351_schema(connection)
+    _validate_v36_schema(connection)
+
+
+V37_TABLES = (
+    "v37_multitimeframe_features",
+    "v37_ai_requests",
+    "v37_ai_forecasts",
+    "v37_ai_evaluations",
+    "v37_ai_calibrators",
+    "v37_ai_model_health",
+    "v37_fusion_configs",
+    "v37_fusion_evaluations",
+    "v37_model_repair_proposals",
+    "v37_model_repair_runs",
+    "v37_model_conflicts",
+)
+
+
+def _validate_v37_schema(connection: Connection) -> None:
+    """Validate the isolated V3.7 table namespace (schema 27)."""
+
+    existing = {
+        str(row[0])
+        for row in connection.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )
+    }
+    namespace = {name for name in existing if name.startswith("v37_")}
+    if namespace != set(V37_TABLES):
+        raise SchemaVersionError(
+            "V3.7 table namespace differs: "
+            f"expected={sorted(V37_TABLES)} actual={sorted(namespace)}"
+        )
+    for table_name in V37_TABLES:
+        table = Base.metadata.tables[table_name]
+        actual_columns = {
+            str(row[1])
+            for row in connection.exec_driver_sql(
+                f"PRAGMA table_info({_quoted(table_name)})"
+            )
+        }
+        expected_names = {column.name for column in table.columns}
+        if set(actual_columns) != expected_names:
+            raise SchemaVersionError(
+                f"{table_name} has an inexact column set"
+            )
+
+
+def _upgrade_to_version_twenty_seven(connection: Connection) -> None:
+    """Add the V3.7 multi-timeframe / AI / fusion / repair namespace."""
+
+    for table_name in V37_TABLES:
+        Base.metadata.tables[table_name].create(connection, checkfirst=True)
+    _validate_v37_schema(connection)
+
+
+def _upgrade_to_version_twenty_eight(connection: Connection) -> None:
+    """V3.7 AI audit corrections: retry attempts + screening scope (schema 28).
+
+    * v37_ai_requests gains attempt_number (bounded retries for transient
+      failures) and screening_scope (HISTORICAL_SCREENING vs FORWARD_OOS).
+    * v37_ai_forecasts gains screening_scope so formal calibration/weight/
+      promotion statistics only read FORWARD_OOS.
+    The v37 tables are brand new (schema 27) and empty at this point, so the
+    request table is rebuilt without touching any earlier-generation table.
+    """
+
+    for table_name in ("v37_ai_requests", "v37_ai_forecasts"):
+        row_count = int(
+            connection.exec_driver_sql(
+                f"SELECT COUNT(*) FROM {_quoted(table_name)}"
+            ).scalar_one()
+        )
+        if row_count != 0:
+            raise SchemaVersionError(
+                f"{table_name} is not empty; schema 28 requires a manual migration"
+            )
+        connection.exec_driver_sql(f"DROP TABLE {_quoted(table_name)}")
+        Base.metadata.tables[table_name].create(connection, checkfirst=True)
+    _validate_v37_schema(connection)
+
+
+def _upgrade_to_version_twenty_nine(connection: Connection) -> None:
+    """Correct the v37 AI forecast unique key to include screening_scope."""
+
+    for table_name in ("v37_ai_requests", "v37_ai_forecasts"):
+        row_count = int(
+            connection.exec_driver_sql(
+                f"SELECT COUNT(*) FROM {_quoted(table_name)}"
+            ).scalar_one()
+        )
+        if row_count != 0:
+            raise SchemaVersionError(
+                f"{table_name} is not empty; schema 29 requires a manual migration"
+            )
+        connection.exec_driver_sql(f"DROP TABLE {_quoted(table_name)}")
+        Base.metadata.tables[table_name].create(connection, checkfirst=True)
+    _validate_v37_schema(connection)
+
+
 def _durable_migration_state(
     engine: Engine,
     artifact_batch: _MigrationArtifactBatch,
@@ -2345,6 +2792,10 @@ def _durable_migration_state(
                     _validate_v34_schema(inspection)
                     _validate_v341_schema(inspection)
                     _validate_v342_schema(inspection)
+                    _validate_v35_schema(inspection)
+                    _validate_v351_schema(inspection)
+                    _validate_v36_schema(inspection)
+                    _validate_v37_schema(inspection)
                 except SchemaVersionError as exc:
                     return "mixed", f"schema validation failed: {exc}"
                 for advice_id, (
@@ -2535,11 +2986,36 @@ def run_migrations(
             if current_version < 22:
                 _upgrade_to_version_twenty_two(connection)
                 current_version = 22
+            if current_version < 23:
+                _upgrade_to_version_twenty_three(connection)
+                current_version = 23
+            if current_version < 24:
+                _upgrade_to_version_twenty_four(connection)
+                current_version = 24
+            if current_version < 25:
+                _upgrade_to_version_twenty_five(connection)
+                current_version = 25
+            if current_version < 26:
+                _upgrade_to_version_twenty_six(connection)
+                current_version = 26
+            if current_version < 27:
+                _upgrade_to_version_twenty_seven(connection)
+                current_version = 27
+            if current_version < 28:
+                _upgrade_to_version_twenty_eight(connection)
+                current_version = 28
+            if current_version < 29:
+                _upgrade_to_version_twenty_nine(connection)
+                current_version = 29
             _validate_market_price_volume_source(connection)
             _validate_v2_schema(connection)
             _validate_v34_schema(connection)
             _validate_v341_schema(connection)
             _validate_v342_schema(connection)
+            _validate_v35_schema(connection)
+            _validate_v351_schema(connection)
+            _validate_v36_schema(connection)
+            _validate_v37_schema(connection)
             connection.exec_driver_sql(
                 f"PRAGMA user_version = {current_version}"
             )

@@ -11,6 +11,7 @@ frontend/playwright-report/
 frontend/test-results/
 
 .env
+config/deepseek.local.json
 data/
 reports/exports/
 reports/

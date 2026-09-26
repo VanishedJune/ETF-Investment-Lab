@@ -20,7 +20,10 @@ from backend.app.models.models import (
     V2PositionSnapshot,
 )
 from backend.app.schemas.investment_calendar import PositionEventCreate, PositionEventUpdate
-from backend.app.services.investment_calendar_service import InvestmentCalendarService
+from backend.app.services.investment_calendar_service import (
+    SUPPORTED_INDEXES,
+    InvestmentCalendarService,
+)
 
 
 def _service(tmp_path, *, run_full_initialization: bool = False):
@@ -134,7 +137,9 @@ def test_position_event_crud_persists_and_reopens_from_sqlite(tmp_path) -> None:
         "updated_at": first["updated_at"],
     }
     assert updated["position_after"] == 45
-    assert reopened.current_positions() == {"399006": 45, "159941": 0}
+    expected_positions = {code: 0 for code in SUPPORTED_INDEXES}
+    expected_positions["399006"] = 45
+    assert reopened.current_positions() == expected_positions
     assert [row["position_after"] for row in reopened.list_entries("399006")] == [45, 20]
 
     with factory() as session:

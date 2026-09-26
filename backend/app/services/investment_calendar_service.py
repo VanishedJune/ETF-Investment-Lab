@@ -21,9 +21,10 @@ from backend.app.models.models import (
     V2PositionSnapshot,
 )
 from backend.app.schemas.investment_calendar import PositionEventCreate, PositionEventUpdate
+from backend.app.services.instrument_universe import AI_ASSISTANT_ETFS, LEGACY_CALENDAR_CODES, calendar_codes
 
 
-SUPPORTED_INDEXES = ("399006", "159941")
+SUPPORTED_INDEXES = tuple(dict.fromkeys([*AI_ASSISTANT_ETFS, *sorted(LEGACY_CALENDAR_CODES)]))
 MAX_WRITE_RETRIES = 3
 WriteResult = TypeVar("WriteResult")
 
@@ -97,9 +98,9 @@ class InvestmentCalendarService:
 
     @staticmethod
     def _instrument(session: Session, code: str) -> Instrument:
-        if code not in SUPPORTED_INDEXES:
+        if code not in calendar_codes(session):
             raise PublicValidationError(
-                f"不支持的标的：{code}，V3.3仓位日历仅支持399006和159941"
+                f"不支持的标的：{code}，当前日历仅支持已登记的指数与ETF"
             )
         instrument = session.scalar(select(Instrument).where(Instrument.code == code))
         if instrument is None:
@@ -411,8 +412,17 @@ class InvestmentCalendarService:
     def current_positions(self) -> dict[str, int | None]:
         positions: dict[str, int | None] = {}
         with self.session_factory() as session:
-            for code in SUPPORTED_INDEXES:
-                instrument = self._instrument(session, code)
+            for code in calendar_codes(session):
+                # Minimal compatibility databases created by older releases
+                # may not have the expanded display-only ETF catalog yet.
+                # Skip an absent catalog row; a fully initialized production
+                # database still returns every supported code (including
+                # 159915) with an explicit cleared 0% position.
+                instrument = session.scalar(
+                    select(Instrument).where(Instrument.code == code)
+                )
+                if instrument is None:
+                    continue
                 value = session.scalar(
                     select(V2PositionSnapshot.position_percent)
                     .join(
@@ -432,7 +442,10 @@ class InvestmentCalendarService:
                 # A missing ledger is an explicit cleared position in V3.1.
                 # This lets the first analysis produce actionable buy batches
                 # while the UI still labels the source as the default 0% state.
-                positions[code] = 0 if value is None else int(Decimal(value))
+                has_events = session.scalar(select(func.count()).select_from(V2PositionEvent).where(
+                    V2PositionEvent.instrument_id == instrument.id
+                ))
+                positions[code] = (None if has_events else 0) if value is None else int(Decimal(value))
         return positions
 
     def net_shares(self) -> dict[str, int | None]:

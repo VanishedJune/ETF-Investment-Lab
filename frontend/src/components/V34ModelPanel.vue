@@ -19,6 +19,7 @@ const props = defineProps<{
   trainingLoading: Record<ActiveInstrumentCode, boolean>;
   trainingError: Record<ActiveInstrumentCode, string>;
   analysisError?: string;
+  readonly?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -27,7 +28,7 @@ const emit = defineEmits<{
 }>();
 
 const markets: ActiveInstrumentCode[] = ["399006", "159941"];
-const names: Record<ActiveInstrumentCode, string> = {
+const names: Record<string, string> = {
   "399006": "创业板指数",
   "159941": "广发纳斯达克100ETF",
 };
@@ -511,12 +512,13 @@ onBeforeUnmount(() => {
         <p>训练模型与数据分析完全分开。周K主模型输出13周分布，近100日日K只修正前1—4周；159941仅使用自身OHLCV及自身派生指标。</p>
       </div>
       <div class="primary-actions">
-        <button data-testid="v34-train" type="button" :disabled="trainingLoading[selected]" @click="emit('train', selected)">
+        <button v-if="!readonly" data-testid="v34-train" type="button" :disabled="trainingLoading[selected]" @click="emit('train', selected)">
           {{ trainingLoading[selected] ? "训练进行中…" : "训练模型" }}
         </button>
-        <button data-testid="v34-analyze" class="primary" type="button" :disabled="analysisLoading || trainingLoading[selected] || !selectedStatus?.bootstrapped" @click="emit('analyze')">
+        <button v-if="!readonly" data-testid="v34-analyze" class="primary" type="button" :disabled="analysisLoading || trainingLoading[selected] || !selectedStatus?.bootstrapped" @click="emit('analyze')">
           {{ analysisLoading ? "正在分析…" : "数据分析" }}
         </button>
+        <span v-if="readonly" class="readonly-note">历史协议只读</span>
       </div>
     </header>
 
@@ -653,6 +655,7 @@ onBeforeUnmount(() => {
 .lab-head p { max-width: 820px; margin: 0; color: #5c6a72; line-height: 1.7; }
 .kicker { margin: 0; color: #12687e; font-size: 12px; font-weight: 900; letter-spacing: .14em; }
 .primary-actions { display: flex; gap: 10px; flex-shrink: 0; }
+.readonly-note { align-self: center; color: #657279; font-size: 12px; font-weight: 800; }
 button { padding: 9px 14px; border: 1px solid #172b3a; background: #fffdf6; color: #172b3a; font-weight: 800; cursor: pointer; }
 button.primary { background: #172b3a; color: #fffdf6; }
 button:disabled { cursor: not-allowed; opacity: .5; }

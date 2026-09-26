@@ -167,6 +167,59 @@ class AkShareEtfResearchProvider(AkShareProvider):
         self.tencent_loader = tencent_loader
 
     @staticmethod
+    def _download_sina_unadjusted(*, symbol: str) -> list[dict[str, object]]:
+        """Download recent unadjusted ETF OHLCV without AkShare's JS runtime.
+
+        AkShare's ``fund_etf_hist_sina`` adapter decrypts another Sina payload
+        through ``py_mini_racer``.  That native runtime is not reliable in the
+        portable build.  Sina also publishes a plain JSONP K-line endpoint;
+        parsing its JSON payload here keeps the fallback independent of any
+        native DLL while preserving the unadjusted trade-price contract.
+        """
+
+        callback = f"_etf_{symbol}"
+        query = urlencode(
+            {
+                "symbol": symbol,
+                "scale": "240",
+                "ma": "no",
+                # The refresh path requests only a short overlap, but using
+                # the endpoint maximum also makes a new local slot usable.
+                "datalen": "1023",
+            }
+        )
+        url = (
+            "https://quotes.sina.cn/cn/api/jsonp_v2.php/"
+            f"var%20{callback}=/CN_MarketDataService.getKLineData?{query}"
+        )
+        request = Request(
+            url,
+            headers={
+                "User-Agent": "ETF-Investment-Lab/3.7",
+                "Referer": "https://finance.sina.com.cn/",
+                "Accept": "application/json,text/javascript,*/*;q=0.8",
+            },
+        )
+        with urlopen(request, timeout=30) as response:
+            body = response.read().decode("utf-8-sig", errors="strict")
+        payload_start = body.find("[")
+        payload_end = body.rfind("]")
+        if payload_start < 0 or payload_end < payload_start:
+            raise ValueError("Sina ETF JSONP response contains no data array")
+        payload = json.loads(body[payload_start : payload_end + 1])
+        if not isinstance(payload, list):
+            raise ValueError("Sina ETF JSONP payload is not a list")
+        rows: list[dict[str, object]] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            row = dict(item)
+            if "date" not in row and "day" in row:
+                row["date"] = row["day"]
+            rows.append(row)
+        return rows
+
+    @staticmethod
     def _download_tencent_qfq(
         instrument_code: str,
         start_date: date | None,
@@ -272,25 +325,45 @@ class AkShareEtfResearchProvider(AkShareProvider):
             warnings: list[str] = []
             result_source = self.source
             eastmoney_volume_is_lots = True
+            primary_problem: str | None = None
             try:
                 raw_rows = self._load_with_retries(loader, common, adjust="")
             except Exception as primary_error:
+                raw_rows = None
+                primary_problem = str(primary_error)
+            raw_records = _to_records(raw_rows, result_source)
+            # AkShare can return an empty DataFrame without raising.  Treat
+            # that exactly like a transport exception so the independent Sina
+            # source is attempted instead of prematurely falling back to the
+            # local SQLite cache.
+            if not raw_records:
                 fallback_loader = self.sina_loader
                 if fallback_loader is None and self.history_loader is None:
-                    import akshare as ak
-
-                    fallback_loader = ak.fund_etf_hist_sina
-                if fallback_loader is None:
-                    raise
-                raw_rows = fallback_loader(
-                    symbol=f"{etf_exchange_prefix(instrument_code)}{instrument_code}"
-                )
-                result_source = "AKSHARE_ETF_SINA"
-                eastmoney_volume_is_lots = False
-                warnings.append(
-                    f"EastMoney ETF history unavailable; Sina public history used: {primary_error}"
-                )
-            raw_records = _to_records(raw_rows, result_source)
+                    fallback_loader = self._download_sina_unadjusted
+                if fallback_loader is not None:
+                    try:
+                        fallback_rows = fallback_loader(
+                            symbol=f"{etf_exchange_prefix(instrument_code)}{instrument_code}"
+                        )
+                    except Exception as fallback_error:
+                        fallback_rows = None
+                        warnings.append(
+                            "Sina ETF history fallback failed: "
+                            f"{fallback_error}"
+                        )
+                    fallback_records = _to_records(
+                        fallback_rows,
+                        "AKSHARE_ETF_SINA",
+                    )
+                    if fallback_records:
+                        raw_records = fallback_records
+                        result_source = "AKSHARE_ETF_SINA"
+                        eastmoney_volume_is_lots = False
+                        reason = primary_problem or "EastMoney returned no usable rows"
+                        warnings.append(
+                            "EastMoney ETF history unavailable; "
+                            f"Sina public history used: {reason}"
+                        )
             if start_date is not None:
                 raw_records = [record for record in raw_records if record.trade_date >= start_date]
             if end_date is not None:
@@ -298,7 +371,16 @@ class AkShareEtfResearchProvider(AkShareProvider):
             if not raw_records:
                 return ProviderResult.failed(
                     result_source,
-                    "AkShare returned no usable unadjusted ETF records",
+                    "; ".join(
+                        filter(
+                            None,
+                            (
+                                "AkShare returned no usable unadjusted ETF records",
+                                primary_problem,
+                                *warnings,
+                            ),
+                        )
+                    ),
                 )
             try:
                 adjusted_records = _to_records(
@@ -429,7 +511,14 @@ INDEX_UNIVERSE: dict[str, dict[str, str]] = {
 }
 
 
-def _index_records(rows: Any, source: str) -> list[MarketDataRecord]:
+def _index_records(
+    rows: Any,
+    source: str,
+    *,
+    amount_as_volume: bool = False,
+    volume_multiplier: int = 1,
+    volume_source: str | None = None,
+) -> list[MarketDataRecord]:
     """Normalize the two public AkShare index tables without ETF adapters.
 
     Chinese index history and the US-index endpoint expose different column
@@ -471,6 +560,13 @@ def _index_records(rows: Any, source: str) -> list[MarketDataRecord]:
             parsed_date = date.fromisoformat(str(raw_date)[:10].replace("/", "-"))
             as_decimal = lambda item: Decimal(str(item).replace(",", ""))
             volume = value("volume")
+            if volume is None and amount_as_volume:
+                # Tencent's ``stock_zh_index_daily_tx`` calls its index
+                # turnover field ``amount``.  For Chinese indices that field
+                # is the trading volume in lots (100 shares), not CNY
+                # turnover.  Keep the raw value plus an explicit multiplier
+                # so the database/UI expose the same share unit as Sina.
+                volume = value("amount")
             records.append(
                 MarketDataRecord(
                     trade_date=parsed_date,
@@ -479,12 +575,16 @@ def _index_records(rows: Any, source: str) -> list[MarketDataRecord]:
                     low_price=as_decimal(raw_low),
                     close_price=as_decimal(raw_close),
                     volume=as_decimal(volume) if volume is not None else None,
+                    volume_multiplier=(volume_multiplier if volume is not None else 1),
                     # Index providers use incompatible turnover units and a
                     # monthly sum can exceed this SQLite fixed-point column's
                     # safe range.  Volume remains available for the chart;
                     # turnover is intentionally absent rather than distorted.
                     amount=None,
                     source=source,
+                    volume_source=(
+                        volume_source or source if volume is not None else None
+                    ),
                 )
             )
         except (ArithmeticError, ValueError):
@@ -507,10 +607,62 @@ class AkShareIndexProvider:
         china_loader: Callable[..., Any] | None = None,
         china_fallback_loader: Callable[..., Any] | None = None,
         us_loader: Callable[..., Any] | None = None,
+        china_tencent_loader: Callable[..., Any] | None = None,
     ) -> None:
         self.china_loader = china_loader
         self.china_fallback_loader = china_fallback_loader
         self.us_loader = us_loader
+        self.china_tencent_loader = china_tencent_loader
+
+    def _fetch_tencent_china_history(
+        self,
+        spec: dict[str, str],
+        start_date: date | None,
+        end_date: date | None,
+    ) -> ProviderResult:
+        """Fetch a current Chinese-index overlay from Tencent via AkShare.
+
+        EastMoney and Sina occasionally stop at an older trading day even
+        though Tencent already has the latest close.  AkShare exposes this
+        public Tencent series as ``stock_zh_index_daily_tx``.  Its ``amount``
+        column is index volume in lots, so ``_index_records`` records the raw
+        value with an explicit ``LOTS_X100`` multiplier.
+        """
+        try:
+            loader = self.china_tencent_loader
+            if loader is None:
+                import akshare as ak
+
+                loader = ak.stock_zh_index_daily_tx
+            prefix = "sh" if spec["symbol"].startswith("0") else "sz"
+            rows = loader(
+                symbol=f"{prefix}{spec['symbol']}",
+                start_date=start_date.strftime("%Y%m%d") if start_date else "",
+                end_date=end_date.strftime("%Y%m%d") if end_date else "",
+            )
+            records = [
+                record
+                for record in _index_records(
+                    rows,
+                    "AKSHARE_INDEX_TENCENT",
+                    amount_as_volume=True,
+                    volume_multiplier=100,
+                    volume_source="AKSHARE_INDEX_TENCENT:LOTS_X100",
+                )
+                if (start_date is None or record.trade_date >= start_date)
+                and (end_date is None or record.trade_date <= end_date)
+            ]
+            if not records:
+                return ProviderResult.failed(
+                    "AKSHARE_INDEX_TENCENT",
+                    f"Tencent returned no usable {spec['name']} records",
+                )
+            return ProviderResult.success("AKSHARE_INDEX_TENCENT", records)
+        except Exception as error:
+            return ProviderResult.failed(
+                "AKSHARE_INDEX_TENCENT",
+                f"Tencent index history fetch failed: {error}",
+            )
 
     def _fallback_china_history(
         self,
@@ -525,6 +677,24 @@ class AkShareIndexProvider:
         an ETF quote.  The source is changed so stored rows and UI attribution
         disclose which public endpoint supplied the curve.
         """
+        # Keep the injectable Sina loader as the first and only fallback in
+        # tests/embedding callers.  Production uses Tencent first because it
+        # is currently the freshest public source for these index histories.
+        if self.china_fallback_loader is None:
+            tencent = self._fetch_tencent_china_history(spec, start_date, end_date)
+            if tencent.records:
+                return tencent.model_copy(
+                    update={
+                        "warnings": [
+                            f"Primary AkShare index endpoint failed: {primary_error}",
+                            "Tencent public index history used as the fresh fallback.",
+                        ],
+                    }
+                )
+            tencent_error = tencent.error or "Tencent returned no records"
+        else:
+            tencent_error = "Tencent fallback skipped because a custom Sina loader was supplied"
+
         try:
             loader = self.china_fallback_loader
             if loader is None:
@@ -532,6 +702,8 @@ class AkShareIndexProvider:
 
                 loader = ak.stock_zh_index_daily
             prefix = "sh" if spec["symbol"].startswith("0") else "sz"
+            # The public Sina AkShare adapter historically accepts only the
+            # symbol argument; retain that call shape for compatibility.
             rows = loader(symbol=f"{prefix}{spec['symbol']}")
             records = [
                 record
@@ -543,16 +715,19 @@ class AkShareIndexProvider:
                 return ProviderResult.success(
                     "AKSHARE_INDEX_SINA",
                     records,
-                    warnings=[f"Primary AkShare index endpoint failed: {primary_error}"],
+                    warnings=[
+                        f"Primary AkShare index endpoint failed: {primary_error}",
+                        f"Tencent fallback unavailable: {tencent_error}",
+                    ],
                 )
             return ProviderResult.failed(
                 self.source,
-                f"Primary and Sina AkShare direct-index endpoints returned no usable {spec['name']} records; primary error: {primary_error}",
+                f"Primary, Tencent, and Sina AkShare direct-index endpoints returned no usable {spec['name']} records; primary error: {primary_error}; Tencent error: {tencent_error}",
             )
         except Exception as fallback_error:
             return ProviderResult.failed(
                 self.source,
-                f"Primary AkShare direct-index fetch failed: {primary_error}; Sina history fallback failed: {fallback_error}",
+                f"Primary AkShare direct-index fetch failed: {primary_error}; Tencent fallback failed: {tencent_error}; Sina history fallback failed: {fallback_error}",
             )
 
     def fetch(
@@ -609,6 +784,32 @@ class AkShareIndexProvider:
                         else "available"
                     ),
                 )
+            if spec["market"] == "CN" and (
+                self.china_loader is None or self.china_tencent_loader is not None
+            ):
+                # Do not discard a valid EastMoney history, but repair a
+                # stale cutoff when Tencent already has later sessions.  Only
+                # dates strictly newer than the primary result are appended,
+                # which avoids changing historical OHLC rounding or source
+                # attribution just because the overlay uses another feed.
+                tencent = self._fetch_tencent_china_history(spec, start_date, end_date)
+                if tencent.records:
+                    primary_cutoff = max(record.trade_date for record in records)
+                    newer = [
+                        record
+                        for record in tencent.records
+                        if record.trade_date > primary_cutoff
+                    ]
+                    if newer:
+                        records = [*records, *newer]
+                        return ProviderResult.success(
+                            self.source,
+                            records,
+                            warnings=[
+                                "EastMoney index history returned an older cutoff;",
+                                "newer sessions were appended from Tencent public index history.",
+                            ],
+                        )
             return ProviderResult.success(
                 self.source,
                 records,

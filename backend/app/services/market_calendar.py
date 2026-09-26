@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from typing import Protocol
 
 
@@ -39,17 +39,24 @@ class ExchangeCalendarProvider:
         "NDX": ("XNAS", "XNAS", False),
     }
 
+    @staticmethod
+    def _binding_for(instrument_code: str) -> tuple[str, str, bool]:
+        if instrument_code in ExchangeCalendarProvider._CALENDAR_BINDINGS:
+            return ExchangeCalendarProvider._CALENDAR_BINDINGS[instrument_code]
+        if instrument_code.startswith(("5", "6")):
+            return ("XSHG", "XSHG", False)
+        if instrument_code.startswith(("0", "1", "3")):
+            return ("XSHG", "XSHE", True)
+        raise ValueError(
+            f"No exchange calendar configured for instrument: {instrument_code}"
+        )
+
     def metadata(self, instrument_code: str) -> dict[str, str | bool]:
         """Return the target exchange and auditable schedule provenance."""
 
-        try:
-            schedule_name, target_exchange, equivalent_proxy = self._CALENDAR_BINDINGS[
-                instrument_code
-            ]
-        except KeyError as error:
-            raise ValueError(
-                f"No exchange calendar configured for instrument: {instrument_code}"
-            ) from error
+        schedule_name, target_exchange, equivalent_proxy = self._binding_for(
+            instrument_code
+        )
         return {
             "target_exchange": target_exchange,
             "schedule_provider": "exchange_calendars",
@@ -57,18 +64,64 @@ class ExchangeCalendarProvider:
             "equivalent_mainland_schedule_proxy": equivalent_proxy,
         }
 
+    def latest_completed_session(
+        self,
+        instrument_code: str,
+        *,
+        as_of: datetime | None = None,
+        availability_delay: timedelta = timedelta(minutes=30),
+    ) -> date | None:
+        """Return the latest session whose close data should be public.
+
+        A calendar date alone is not enough for freshness checks: before the
+        exchange closes, today's row must not be required, and public quote
+        vendors need a small publication buffer after the official close.
+        Exchange-calendars supplies the real close timestamp (including US
+        daylight-saving changes), so the result is auditable for both the
+        mainland ETF panel and the legacy NDX benchmark.
+        """
+
+        current = as_of or datetime.now(timezone.utc)
+        if current.tzinfo is None or current.utcoffset() is None:
+            raise ValueError("as_of must be timezone-aware")
+        if availability_delay < timedelta(0):
+            raise ValueError("availability_delay cannot be negative")
+
+        calendar_name = self._binding_for(instrument_code)[0]
+        import exchange_calendars as exchange_calendars
+
+        calendar = exchange_calendars.get_calendar(calendar_name)
+        current_utc = current.astimezone(timezone.utc)
+        last_session = calendar.last_session.date()
+        # An exhausted packaged schedule must never make old local data look
+        # fresh indefinitely.  Let the caller download and report the calendar
+        # verification failure instead of returning a stale terminal session.
+        if current_utc.date() > last_session + timedelta(days=7):
+            raise ValueError(
+                f"{calendar_name} exchange calendar ends at {last_session.isoformat()}"
+            )
+
+        bounded_end = min(current_utc.date(), last_session)
+        bounded_start = max(
+            calendar.first_session.date(),
+            bounded_end - timedelta(days=31),
+        )
+        sessions = calendar.sessions_in_range(bounded_start, bounded_end)
+        for session in reversed(sessions):
+            close_at = calendar.session_close(session).to_pydatetime()
+            if close_at.tzinfo is None or close_at.utcoffset() is None:
+                close_at = close_at.replace(tzinfo=timezone.utc)
+            if current_utc >= close_at.astimezone(timezone.utc) + availability_delay:
+                return session.date()
+        return None
+
     def sessions(
         self,
         instrument_code: str,
         start_date: date,
         end_date: date,
     ) -> tuple[date, ...]:
-        try:
-            calendar_name = self._CALENDAR_BINDINGS[instrument_code][0]
-        except KeyError as error:
-            raise ValueError(
-                f"No exchange calendar configured for instrument: {instrument_code}"
-            ) from error
+        calendar_name = self._binding_for(instrument_code)[0]
 
         import exchange_calendars as exchange_calendars
 

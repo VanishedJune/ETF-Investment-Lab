@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import * as echarts from "echarts";
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 
 import type {
   IndicatorRow,
@@ -8,7 +8,7 @@ import type {
   MarketTimeframe,
   PriceRow,
 } from "../types/research";
-import { legendColors, normalizeSeries } from "../types/research";
+import { legendColors, normalizeSeries, volumeChangeBarData } from "../types/research";
 import { calculateDynamicYAxis } from "../utils/chartScale";
 
 const props = defineProps<{
@@ -58,7 +58,7 @@ let renderedTimeframe: MarketTimeframe | undefined;
 let scaleFrame: number | undefined;
 let pointerFrame: number | undefined;
 let pendingPointerIndex = -1;
-let legendSelection: Record<string, boolean> = {};
+const legendSelection = reactive<Record<string, boolean>>({});
 
 function formatted(value: number | null | undefined, digits = 2): string {
   const parsed = Number(value);
@@ -163,7 +163,7 @@ function render() {
       text: "正在校准价格、量能与周线动能…",
       color: legendColors.dif,
       textColor: "#3e5260",
-      maskColor: "rgba(255, 253, 246, 0.86)",
+      maskColor: "rgba(244, 246, 248, 0.86)",
     });
     chartState.value = "loading";
     return;
@@ -188,9 +188,12 @@ function render() {
         type: "bar",
         xAxisIndex: 1,
         yAxisIndex: 1,
-        data: series.value.volumes,
-        barMaxWidth: 8,
-        itemStyle: { color: legendColors.volume, opacity: 0.72 },
+        data: volumeChangeBarData(series.value.volumes, 0.72),
+        // Filtered dataZoom keeps the visible category width instead of
+        // compressing thousands of historical bars into hairlines.
+        barWidth: "72%",
+        barMaxWidth: 26,
+        barMinWidth: 5,
       }]
     : [];
 
@@ -208,34 +211,9 @@ function render() {
       transitionDuration: 0,
       axisPointer: { type: "line", snap: true },
     },
-    legend: {
-      top: 2,
-      right: 72,
-      selectedMode: true,
-      selected: legendSelection,
-      itemWidth: 18,
-      itemHeight: 8,
-      data: ["MA5", "MA10", "MA20", "成交量", "MACD柱", "DIF", "DEA", "DIF一阶变化"],
-      formatter: (name: string) => {
-        if (name === "DIF") return "{dif|DIF}";
-        if (name === "DEA") return "{dea|DEA}";
-        if (name === "MACD柱") return "{macd|MACD柱}";
-        if (name === "DIF一阶变化") return "{derivative|DIF一阶变化}";
-        return name;
-      },
-      textStyle: {
-        color: "#5f6c72",
-        fontSize: 12,
-        rich: {
-          dif: { color: legendColors.dif, fontWeight: 800 },
-          dea: { color: legendColors.dea, fontWeight: 800 },
-          macd: { color: legendColors.macdPositive, fontWeight: 800 },
-          derivative: { color: legendColors.difFirstChange, fontWeight: 800 },
-        },
-      },
-    },
+    legend: { show: false },
     grid: [
-      { left: 72, right: 72, top: 46, height: "39%" },
+      { left: 72, right: 72, top: 12, height: "39%" },
       { left: 72, right: 72, top: "47%", height: "11%" },
       { left: 72, right: 72, top: "61%", height: "14%" },
       { left: 72, right: 72, top: "78%", height: "11%" },
@@ -245,11 +223,11 @@ function render() {
       gridIndex,
       data: series.value.dates,
       boundaryGap: true,
-      axisLine: { lineStyle: { color: "#b9b09e" } },
+      axisLine: { lineStyle: { color: "#d5dce5" } },
       axisTick: { show: false },
       axisLabel: {
         show: gridIndex === 3,
-        color: "#66737a",
+        color: "#657184",
         hideOverlap: true,
         fontSize: 12,
       },
@@ -262,8 +240,8 @@ function render() {
       {
         scale: true,
         position: "right",
-        axisLabel: { color: "#66737a", fontSize: 12 },
-        splitLine: { lineStyle: { color: "#e6dfd2" } },
+        axisLabel: { color: "#657184", fontSize: 12 },
+        splitLine: { lineStyle: { color: "#e3e8ee" } },
       },
       {
         gridIndex: 1,
@@ -271,7 +249,7 @@ function render() {
         position: "right",
         splitNumber: 2,
         axisLabel: {
-          color: "#66737a",
+          color: "#657184",
           fontSize: 11,
           formatter: (value: number) => compactAxis(value),
         },
@@ -281,8 +259,8 @@ function render() {
         gridIndex: 2,
         scale: true,
         position: "right",
-        axisLabel: { color: "#66737a", fontSize: 12 },
-        splitLine: { lineStyle: { color: "#e6dfd2" } },
+        axisLabel: { color: "#657184", fontSize: 12 },
+        splitLine: { lineStyle: { color: "#e3e8ee" } },
       },
       {
         gridIndex: 3,
@@ -298,7 +276,8 @@ function render() {
         xAxisIndex: [0, 1, 2, 3],
         start: zoomStart,
         end: zoomEnd,
-        filterMode: "none",
+        filterMode: "filter",
+        throttle: 40,
       },
       {
         type: "slider",
@@ -307,12 +286,13 @@ function render() {
         end: zoomEnd,
         bottom: 6,
         height: 22,
-        borderColor: "#b9b09e",
-        backgroundColor: "#eee8dc",
-        fillerColor: "rgba(18, 104, 126, .15)",
-        handleStyle: { color: "#12687e", borderColor: "#12687e" },
-        textStyle: { color: "#66737a" },
-        filterMode: "none",
+        borderColor: "#d5dce5",
+        backgroundColor: "#e3e8ee",
+        fillerColor: "rgba(102, 132, 167, .12)",
+        handleStyle: { color: "#52789c", borderColor: "#52789c" },
+        textStyle: { color: "#657184" },
+        filterMode: "filter",
+        throttle: 40,
       },
     ],
     graphic: series.value.volumeAvailable
@@ -335,16 +315,22 @@ function render() {
         name: "标的K线",
         type: "candlestick",
         data: series.value.candles,
+        // A real candlestick body must remain visible at the default zoom;
+        // the previous 3px minimum rendered as a single vertical line.
+        barWidth: "70%",
+        barMaxWidth: 30,
+        barMinWidth: 6,
         itemStyle: {
           color: legendColors.priceUp,
           color0: legendColors.priceDown,
           borderColor: legendColors.priceUp,
           borderColor0: legendColors.priceDown,
+          borderWidth: 1.2,
         },
       },
-      lineSeries("MA5", series.value.ma5, legendColors.ma5, 0, 0, 1.15),
-      lineSeries("MA10", series.value.ma10, legendColors.ma10, 0, 0, 1.15),
-      lineSeries("MA20", series.value.ma20, legendColors.ma20, 0, 0, 1.35),
+      lineSeries("MA5", series.value.ma5, legendColors.ma5, 0, 0, 1.8),
+      lineSeries("MA10", series.value.ma10, legendColors.ma10, 0, 0, 1.8),
+      lineSeries("MA20", series.value.ma20, legendColors.ma20, 0, 0, 2.1),
       ...volumeSeries,
       {
         name: "MACD柱",
@@ -352,7 +338,10 @@ function render() {
         xAxisIndex: 2,
         yAxisIndex: 2,
         data: series.value.macd,
-        barMaxWidth: 7,
+        // Keep histogram columns visually comparable to the volume bars.
+        barWidth: "68%",
+        barMaxWidth: 22,
+        barMinWidth: 4,
         itemStyle: {
           color: (item: { value: number }) => (
             item.value >= 0 ? legendColors.macdPositive : legendColors.macdNegative
@@ -383,7 +372,10 @@ function render() {
   chart.off("legendselectchanged");
   chart.on("legendselectchanged", (event: unknown) => {
     const payload = event as { selected?: Record<string, boolean> };
-    legendSelection = { ...(payload.selected ?? {}) };
+    for (const key of Object.keys(legendSelection)) {
+      delete legendSelection[key];
+    }
+    Object.assign(legendSelection, payload.selected ?? {});
     scheduleDynamicAxes();
   });
   chart.off("updateAxisPointer");
@@ -412,7 +404,7 @@ function lineSeries(
     showSymbol: false,
     connectNulls: false,
     sampling: "lttb",
-    lineStyle: { color, width },
+    lineStyle: { color, width, type: name.includes('MA10') ? 'dashed' : name.includes('MA20') ? 'dotted' : 'solid' },
     itemStyle: { color },
     emphasis: { focus: "series" },
   };
@@ -424,6 +416,16 @@ function compactAxis(value: number): string {
   if (absolute >= 1e8) return `${(value / 1e8).toFixed(1)}亿`;
   if (absolute >= 1e4) return `${(value / 1e4).toFixed(1)}万`;
   return String(Math.round(value));
+}
+
+function toggleSeries(name: string) {
+  const next = legendSelection[name] !== false;
+  legendSelection[name] = !next;
+  chart?.dispatchAction({
+    type: "legendToggleSelect",
+    name,
+  });
+  scheduleDynamicAxes();
 }
 
 watch(
@@ -464,14 +466,84 @@ onBeforeUnmount(() => {
     <div class="chart-workspace">
       <div class="chart-stage">
         <div class="chart-rail" aria-label="动能颜色说明">
-          <span class="rail-caption">动能</span>
-          <b class="macd-positive">MACD柱（正）</b>
-          <b class="macd-negative">MACD柱（负）</b>
-          <b class="dif-label" data-testid="dif-label">DIF</b>
-          <b class="dea-label" data-testid="dea-label">DEA</b>
-          <b class="derivative-label" data-testid="dif-first-change-label">DIF一阶变化</b>
+          <span class="rail-caption">完整序列</span>
+          <span class="price-label">价格/K线</span>
+          <b
+            class="ma-label ma5-label"
+            data-testid="ma5-label"
+            :class="{ selected: legendSelection['MA5'] !== false }"
+            role="button"
+            tabindex="0"
+            @click="toggleSeries('MA5')"
+            @keydown.enter="toggleSeries('MA5')"
+          >MA5</b>
+          <b
+            class="ma-label ma10-label"
+            data-testid="ma10-label"
+            :class="{ selected: legendSelection['MA10'] !== false }"
+            role="button"
+            tabindex="0"
+            @click="toggleSeries('MA10')"
+            @keydown.enter="toggleSeries('MA10')"
+          >MA10</b>
+          <b
+            class="ma-label ma20-label"
+            data-testid="ma20-label"
+            :class="{ selected: legendSelection['MA20'] !== false }"
+            role="button"
+            tabindex="0"
+            @click="toggleSeries('MA20')"
+            @keydown.enter="toggleSeries('MA20')"
+          >MA20</b>
+          <span class="volume-label">成交量（量增红 / 量减绿）</span>
+          <b
+            class="macd-positive"
+            :class="{ selected: legendSelection['MACD柱'] !== false }"
+            role="button"
+            tabindex="0"
+            @click="toggleSeries('MACD柱')"
+            @keydown.enter="toggleSeries('MACD柱')"
+          >MACD柱（正）</b>
+          <b
+            class="macd-negative"
+            :class="{ selected: legendSelection['MACD柱'] !== false }"
+            role="button"
+            tabindex="0"
+            @click="toggleSeries('MACD柱')"
+            @keydown.enter="toggleSeries('MACD柱')"
+          >MACD柱（负）</b>
+          <b
+            class="dif-label"
+            data-testid="dif-label"
+            :class="{ selected: legendSelection['DIF'] !== false }"
+            role="button"
+            tabindex="0"
+            @click="toggleSeries('DIF')"
+            @keydown.enter="toggleSeries('DIF')"
+          >DIF</b>
+          <b
+            class="dea-label"
+            data-testid="dea-label"
+            :class="{ selected: legendSelection['DEA'] !== false }"
+            role="button"
+            tabindex="0"
+            @click="toggleSeries('DEA')"
+            @keydown.enter="toggleSeries('DEA')"
+          >DEA</b>
+          <b
+            class="derivative-label"
+            data-testid="dif-first-change-label"
+            :class="{ selected: legendSelection['DIF一阶变化'] !== false }"
+            role="button"
+            tabindex="0"
+            @click="toggleSeries('DIF一阶变化')"
+            @keydown.enter="toggleSeries('DIF一阶变化')"
+          >DIF一阶变化</b>
           <button type="button" class="chart-reset" @click="resetZoom">重置缩放</button>
         </div>
+        <p class="chart-series-note">
+          {{ timeframe === "daily" ? "日K" : timeframe === "weekly" ? "周K" : "月K" }}完整序列：{{ series.dates.length }} 个周期；价格、成交量、MACD柱、DIF、DEA与DIF一阶变化共用时间轴
+        </p>
         <div
           ref="chartElement"
           class="unified-chart-canvas"
@@ -550,46 +622,81 @@ onBeforeUnmount(() => {
 .chart-stage {
   position: relative;
   min-width: 0;
+  height: 900px;
+  display: flex;
+  flex-direction: column;
 }
 
 .unified-chart-canvas {
   width: 100%;
-  height: 900px;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
 }
 
 .chart-rail {
-  position: absolute;
-  z-index: 2;
-  top: 590px;
-  left: 18px;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
   max-width: calc(100% - 36px);
   padding: 7px 10px;
-  border: 1px solid rgba(185, 176, 158, .8);
-  background: rgba(255, 253, 246, .9);
-  box-shadow: 3px 3px 0 rgba(23, 43, 58, .08);
+  border: 1px solid rgba(220, 226, 232, .9);
+  background: rgba(244, 246, 248, .9);
+  box-shadow: 3px 3px 0 rgba(38, 52, 69, .04);
   font-size: 13px;
+  margin-bottom: 8px;
+}
+
+.chart-rail b {
+  cursor: pointer;
+  user-select: none;
+  opacity: .55;
+}
+
+.chart-rail b.selected {
+  opacity: 1;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.chart-rail > span:not(.rail-caption) {
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.price-label { color: #8c5d49; }
+.volume-label { color: #64748b; }
+.ma-label { display: inline-flex; align-items: center; gap: 5px; }
+.ma-label::before { width: 20px; height: 3px; background: currentColor; content: ""; box-shadow: 0 1px 0 rgba(23, 43, 58, .16); }
+.ma5-label { color: #ae794b; }
+.ma10-label { color: #52789c; }
+.ma20-label { color: #97718f; }
+
+.chart-series-note {
+  margin: 0 0 4px;
+  color: #657184;
+  font-size: 12px;
+  letter-spacing: .01em;
 }
 
 .rail-caption {
-  color: #69747a;
+  color: #657184;
   font-weight: 800;
   letter-spacing: .12em;
 }
 
-.macd-positive { color: #d9553f; }
-.macd-negative { color: #14836d; }
-.dif-label { color: #12687e; }
-.dea-label { color: #d88b2c; }
-.derivative-label { color: #7b4ca0; }
+.macd-positive { color: #d64b4b; }
+.macd-negative { color: #27845a; }
+.dif-label { color: #52789c; }
+.dea-label { color: #a57738; }
+.derivative-label { color: #807096; }
 
 .chart-reset {
   margin-left: auto;
   padding: 5px 9px;
   border: 1px solid #8f887a;
-  color: #172b3a;
+  color: #263445;
   background: transparent;
   font-size: 12px;
   font-weight: 800;
@@ -597,8 +704,8 @@ onBeforeUnmount(() => {
 
 .chart-reset:hover,
 .chart-reset:focus-visible {
-  color: #fffdf6;
-  background: #172b3a;
+  color: #ffffff;
+  background: #263445;
   outline: none;
 }
 
@@ -607,8 +714,8 @@ onBeforeUnmount(() => {
   inset: 70px 24px 48px;
   display: grid;
   place-items: center;
-  color: #69747a;
-  background: rgba(255, 253, 246, .84);
+  color: #657184;
+  background: rgba(244, 246, 248, .84);
   font-size: 15px;
 }
 
@@ -619,10 +726,10 @@ onBeforeUnmount(() => {
   top: 18px;
   min-height: 846px;
   padding: 18px;
-  border: 1px solid #b9b09e;
-  background: #f7f4ec;
-  box-shadow: 5px 5px 0 rgba(23, 43, 58, .08);
-  color: #172b3a;
+  border: 1px solid #d5dce5;
+  background: #e9edf2;
+  box-shadow: 5px 5px 0 rgba(38, 52, 69, .04);
+  color: #263445;
 }
 
 .market-point-details > header {
@@ -631,7 +738,7 @@ onBeforeUnmount(() => {
   gap: 12px;
   align-items: flex-start;
   padding-bottom: 14px;
-  border-bottom: 2px solid #172b3a;
+  border-bottom: 2px solid #263445;
 }
 
 .market-point-details h3,
@@ -639,45 +746,45 @@ onBeforeUnmount(() => {
 .market-point-details p { margin: 0; }
 
 .market-point-details h3 { margin-top: 4px; font-size: 20px; }
-.market-point-details > header > b { padding: 5px 8px; background: #172b3a; color: #fffdf6; }
-.details-kicker { color: #12687e; font-size: 10px; font-weight: 900; letter-spacing: .14em; }
+.market-point-details > header > b { padding: 5px 8px; background: #263445; color: #ffffff; }
+.details-kicker { color: #52789c; font-size: 10px; font-weight: 900; letter-spacing: .14em; }
 .market-point-details > time { display: block; padding: 18px 0 10px; font-size: 24px; font-weight: 850; }
 
 .details-section {
   margin-top: 12px;
   padding-top: 12px;
-  border-top: 1px solid #d4cdc0;
+  border-top: 1px solid #d5dce5;
 }
 
 .details-section h4 {
   margin-bottom: 6px;
-  color: #69747a;
+  color: #657184;
   font-size: 11px;
   letter-spacing: .12em;
 }
 
 .details-section dl { margin: 0; }
 .details-section dl > div { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0; }
-.details-section dt { color: #657279; }
+.details-section dt { color: #657184; }
 .details-section dd { margin: 0; font-variant-numeric: tabular-nums; font-weight: 800; text-align: right; }
 .details-section .primary-value { margin: 4px -8px 0; padding: 8px; background: #e6efed; }
-.details-section .primary-value dd { color: #12687e; font-size: 18px; }
-.ma5-detail { color: #9f5f43 !important; }
-.ma10-detail { color: #6c7fa9 !important; }
-.ma20-detail { color: #7d6b32 !important; }
+.details-section .primary-value dd { color: #52789c; font-size: 18px; }
+.ma5-detail { color: #ae794b !important; }
+.ma10-detail { color: #52789c !important; }
+.ma20-detail { color: #97718f !important; }
 
 .market-point-details footer {
   display: grid;
   gap: 4px;
   margin-top: 16px;
   padding-top: 12px;
-  border-top: 1px solid #d4cdc0;
-  color: #69747a;
+  border-top: 1px solid #d5dce5;
+  color: #657184;
   font-size: 11px;
 }
 
-.market-point-details footer b { color: #172b3a; overflow-wrap: anywhere; }
-.details-empty { padding-top: 18px; color: #69747a; }
+.market-point-details footer b { color: #263445; overflow-wrap: anywhere; }
+.details-empty { padding-top: 18px; color: #657184; }
 
 @media (max-width: 1180px) {
   .chart-workspace { grid-template-columns: 1fr; }
@@ -689,15 +796,12 @@ onBeforeUnmount(() => {
 
 @media (max-width: 760px) {
   .unified-market-chart,
-  .unified-chart-canvas {
+  .chart-stage {
     min-height: 760px;
     height: 760px;
   }
 
   .chart-rail {
-    top: 538px;
-    right: 12px;
-    left: 12px;
     flex-wrap: wrap;
     gap: 6px 10px;
   }

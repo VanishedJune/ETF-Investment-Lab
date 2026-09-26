@@ -132,8 +132,9 @@ class V341FeatureService:
 
     @staticmethod
     def validate_market(market: str) -> None:
-        if market not in SUPPORTED_MARKETS:
-            raise V34FeatureError("V3.4.1 supports only 399006 and 159941")
+        code = str(market)
+        if code != "399006" and not (len(code) == 6 and code.isdigit()):
+            raise V34FeatureError("V3.4.1 supports 399006 and six-digit ETF codes")
 
     def weekly_anchors(
         self,
@@ -190,7 +191,7 @@ class V341FeatureService:
 
     def load_snapshot(self, session: Session, market: str, anchor: date) -> FeatureSnapshot:
         self.validate_market(market)
-        if market == "159941":
+        if market != "399006":
             snapshot = self._v34.load_snapshot(session, market, anchor)
             return replace(
                 snapshot,
@@ -255,4 +256,3 @@ class V341FeatureService:
         }
         payload["snapshot_hash"] = _hash(payload)
         return payload
-

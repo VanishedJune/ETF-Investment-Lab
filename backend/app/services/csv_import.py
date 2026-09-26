@@ -21,10 +21,11 @@ from ..schemas.market import (
 
 COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "trade_date": ("date", "trade_date", "日期"),
-    "open_price": ("open", "open_price", "开盘"),
-    "high_price": ("high", "high_price", "最高"),
-    "low_price": ("low", "low_price", "最低"),
-    "close_price": ("close", "close_price", "收盘"),
+    "open_price": ("raw_open", "open", "open_price", "开盘"),
+    "high_price": ("raw_high", "high", "high_price", "最高"),
+    "low_price": ("raw_low", "low", "low_price", "最低"),
+    "close_price": ("raw_close", "close", "close_price", "收盘"),
+    "adjusted_close_price": ("adj_close", "adjusted_close", "adjusted_close_price"),
     "volume": ("volume", "成交量"),
     "amount": ("amount", "成交额"),
 }
@@ -134,10 +135,18 @@ def parse_csv_market_data(contents: str | bytes | Path) -> ParsedCsv:
                     numeric[field] = _parse_decimal(value, field)
                 else:
                     numeric[field] = _parse_decimal(value, field) if value else None
+            adjusted_header = mapping.get("adjusted_close_price")
+            adjusted_text = _cell_text(row.get(adjusted_header, "") if adjusted_header else "")
+            adjusted_close = (
+                _parse_decimal(adjusted_text, "adjusted_close_price").quantize(Decimal("0.00000001"))
+                if adjusted_text
+                else None
+            )
             records.append(
                 MarketDataRecord(
                     trade_date=trade_date,
                     close_price=close_price,
+                    adjusted_close_price=adjusted_close,
                     source="CSV",
                     **numeric,
                 )

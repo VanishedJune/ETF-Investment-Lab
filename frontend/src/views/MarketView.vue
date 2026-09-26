@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import * as echarts from "echarts";
 import { api, percent } from "../api";
 import { alignIndicatorValues } from "../chart-data";
+import { legendColors, volumeChangeBarData } from "../types/research";
 
 type MarketRow = { date: string; open: string | number; high: string | number; low: string | number; close: string | number; volume?: string | number | null; source?: string | null };
 
@@ -119,10 +120,10 @@ function renderChart() {
   const rows: MarketRow[] = market.value.rows;
   const dates = rows.map((row) => row.date);
   const candle = rows.map((row) => [numberOf(row.open), numberOf(row.close), numberOf(row.low), numberOf(row.high)]);
-  const volumes = rows.map((row) => {
-    if (row.volume == null) return null;
-    return { value: numberOf(row.volume), itemStyle: { color: numberOf(row.close) >= numberOf(row.open) ? "#d84b45" : "#16885f" } };
-  });
+  const volumes = volumeChangeBarData(
+    rows.map((row) => row.volume == null ? null : numberOf(row.volume)),
+    0.76,
+  );
   const histogram = indicatorValues("macd_histogram");
   const start = Math.max(0, 100 - Math.min(100, (100 / Math.max(rows.length, 1)) * 100));
 
@@ -148,9 +149,9 @@ function renderChart() {
     ],
     series: [
       { name: "指数 K 线", type: "candlestick", xAxisIndex: 0, yAxisIndex: 0, data: candle, itemStyle: { color: "#d84b45", color0: "#16885f", borderColor: "#d84b45", borderColor0: "#16885f" } },
-      { name: "MA5", type: "line", xAxisIndex: 0, yAxisIndex: 0, data: indicatorValues("ma_5"), symbol: "none", lineStyle: { width: 1.2, color: "#2767cc" } },
-      { name: "MA10", type: "line", xAxisIndex: 0, yAxisIndex: 0, data: indicatorValues("ma_10"), symbol: "none", lineStyle: { width: 1.2, color: "#e39422" } },
-      { name: "MA20", type: "line", xAxisIndex: 0, yAxisIndex: 0, data: indicatorValues("ma_20"), symbol: "none", lineStyle: { width: 1.2, color: "#c63bb5" } },
+      { name: "MA5", type: "line", xAxisIndex: 0, yAxisIndex: 0, data: indicatorValues("ma_5"), symbol: "none", lineStyle: { width: 1.8, color: legendColors.ma5 } },
+      { name: "MA10", type: "line", xAxisIndex: 0, yAxisIndex: 0, data: indicatorValues("ma_10"), symbol: "none", lineStyle: { width: 1.8, color: legendColors.ma10 } },
+      { name: "MA20", type: "line", xAxisIndex: 0, yAxisIndex: 0, data: indicatorValues("ma_20"), symbol: "none", lineStyle: { width: 2.1, color: legendColors.ma20 } },
       { name: "MA60", type: "line", xAxisIndex: 0, yAxisIndex: 0, data: indicatorValues("ma_60"), symbol: "none", lineStyle: { width: 1.2, color: "#27824f" } },
       { name: "成交量", type: "bar", xAxisIndex: 1, yAxisIndex: 1, data: volumes, barMaxWidth: 12 },
       { name: "MACD", type: "bar", xAxisIndex: 2, yAxisIndex: 2, data: histogram.map((value) => value === null ? null : ({ value, itemStyle: { color: value >= 0 ? "#d84b45" : "#16885f" } })), barMaxWidth: 8 },
@@ -329,7 +330,7 @@ watch([selected, timeframe], () => { analysis.value = undefined; void load(); })
 
     <div class="market-workspace">
       <div class="chart-workbench">
-        <div class="chart-legend"><b>主图</b><span class="candle-key">指数 K 线</span><span class="ma5">MA5</span><span class="ma10">MA10</span><span class="ma20">MA20</span><span class="ma60">MA60</span><em>下方独立区域：成交量 / MACD 柱 / DIF / DEA</em></div>
+        <div class="chart-legend"><b>主图</b><span class="candle-key">指数 K 线</span><span class="ma5">MA5</span><span class="ma10">MA10</span><span class="ma20">MA20</span><span class="ma60">MA60</span><em>下方独立区域：成交量（量增红 / 量减绿）/ MACD 柱 / DIF / DEA</em></div>
         <div class="macd-panel-legend" aria-label="MACD 指标颜色说明"><span class="macd-bar-key">MACD柱</span><span class="macd-dif-key">DIF</span><span class="macd-dea-key">DEA</span></div>
         <div v-if="hasUnavailableVolume" class="volume-warning">当前周期部分指数成交量因本地精度限制不可用，未以零值绘制。</div>
         <div v-if="loading && !market" class="terminal-loading">正在调取本地数据…</div>
@@ -378,3 +379,32 @@ watch([selected, timeframe], () => { analysis.value = undefined; void load(); })
 
   <section class="panel section-gap comparison-panel"><div class="panel-head"><div><span class="eyebrow">RELATIVE PERFORMANCE</span><h2>三大指数相对走势</h2><p class="muted">每条曲线均以其首个可用交易日 = 100 归一化，仅比较变化，不混入 ETF 价格。</p></div><button class="button ghost" @click="loadComparison">刷新曲线</button></div><div ref="comparisonEl" class="comparison-chart"></div></section>
 </template>
+
+<style scoped>
+.chart-legend .ma5,
+.chart-legend .ma10,
+.chart-legend .ma20,
+.chart-legend .ma60 {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.chart-legend .ma5::before,
+.chart-legend .ma10::before,
+.chart-legend .ma20::before,
+.chart-legend .ma60::before {
+  width: 20px;
+  height: 3px;
+  background: currentColor;
+  content: "";
+  box-shadow: 0 1px 0 rgba(23, 43, 58, .16);
+}
+
+.chart-legend .ma5 { color: #e56b00; }
+.chart-legend .ma10 { color: #1468d4; }
+.chart-legend .ma20 { color: #b62a77; }
+.chart-legend .ma60 { color: #27824f; }
+</style>

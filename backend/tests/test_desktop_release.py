@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import ctypes
 from ctypes import wintypes
+import json
+import os
 from pathlib import Path
 import socket
 import sqlite3
@@ -12,10 +14,17 @@ from uuid import uuid4
 import pytest
 
 import desktop_launcher
+from backend.app.services.webview_profile import (
+    OWNER_FILE,
+    ProcessProbe,
+    cleanup_profiles,
+    profile_state,
+)
 
 
-def test_desktop_release_identifies_v34_13w() -> None:
-    assert desktop_launcher.APP_TITLE.endswith("V3.4-13W")
+def test_desktop_release_identifies_v37_data_only() -> None:
+    assert "V3.7" in desktop_launcher.APP_TITLE
+    assert desktop_launcher.APP_TITLE.endswith("Data Only")
 
 
 def test_desktop_command_parser_is_strict() -> None:
@@ -178,6 +187,57 @@ def test_embedded_server_uses_dynamic_port_and_preserves_restart_data(
     assert not (home / "data" / "desktop-port.json").exists()
 
 
+def test_webview_cleanup_preserves_active_unknown_and_newest_stale(tmp_path: Path) -> None:
+    data = tmp_path / "data"
+    data.mkdir()
+    stale_old = data / "webview2-101"
+    stale_new = data / "webview2-102"
+    active = data / "webview2-103"
+    unknown = data / "webview2-104"
+    unrelated = data / "webview-cache"
+    for path in (stale_old, stale_new, active, unknown, unrelated):
+        path.mkdir()
+    os.utime(stale_old, (1, 1))
+    os.utime(stale_new, (2, 2))
+    (active / OWNER_FILE).write_text(
+        json.dumps({"pid": 103, "process_start_filetime": 300}), encoding="utf-8"
+    )
+
+    def probe(pid: int) -> ProcessProbe:
+        return {
+            101: ProcessProbe("absent"),
+            102: ProcessProbe("absent"),
+            103: ProcessProbe("active", 300),
+            104: ProcessProbe("unknown"),
+        }[pid]
+
+    result = cleanup_profiles(data, process_probe=probe, retry_delays=())
+    assert stale_old.exists() is False
+    assert stale_new.exists()
+    assert active.exists()
+    assert unknown.exists()
+    assert unrelated.exists()
+    assert result["retained_stale"] == stale_new.name
+
+
+def test_webview_pid_reuse_is_stale_but_bad_marker_fails_closed(tmp_path: Path) -> None:
+    reused = tmp_path / "webview2-201"
+    ambiguous = tmp_path / "webview2-202"
+    reused.mkdir()
+    ambiguous.mkdir()
+    (reused / OWNER_FILE).write_text(
+        json.dumps({"pid": 201, "process_start_filetime": 1}), encoding="utf-8"
+    )
+    (ambiguous / OWNER_FILE).write_text("not-json", encoding="utf-8")
+
+    assert profile_state(
+        reused, process_probe=lambda _pid: ProcessProbe("active", 2)
+    ) == "stale"
+    assert profile_state(
+        ambiguous, process_probe=lambda _pid: ProcessProbe("active", 2)
+    ) == "unknown"
+
+
 def test_packaged_release_build_uses_consistent_snapshot_and_post_copy_audits() -> None:
     project_root = Path(__file__).resolve().parents[2]
     build_script = (project_root / "scripts" / "build-desktop.ps1").read_text(
@@ -185,20 +245,17 @@ def test_packaged_release_build_uses_consistent_snapshot_and_post_copy_audits() 
     )
     assert "snapshot_sqlite_database" in build_script
     assert "Copy-Item -LiteralPath \"data\\investment_lab.db\"" not in build_script
-    assert "if (Test-Path -LiteralPath $ReleaseDatabase)" in build_script
-    assert "$ProductionDatabaseSource = $ReleaseDatabase" in build_script
-    assert "packaging-production-snapshot.db" in build_script
+    assert "if (-not (Test-Path -LiteralPath $DistExecutable)" in build_script
     assert "PRAGMA integrity_check" in build_script
-    assert "Path(r'$StagedReleaseDatabase'), Path(r'$ReleaseDatabase')" in build_script
-    assert "Packaged V3.2 read-only baseline audit failed" in build_script
-    assert "Packaged V3.3 model-state audit failed" in build_script
+    assert "Path(r'$SourceDatabase'), Path(r'$ReleaseDatabase')" in build_script
+    assert "Copy-Item -LiteralPath $DistExecutable -Destination $RootExecutable" in build_script
+    assert "$rootHash -ne $releaseHash" in build_script
+    assert 'Remove-Item -LiteralPath $BuildStaging -Recurse -Force' in build_script
+    assert 'Remove-Item -LiteralPath $DistStaging -Recurse -Force' in build_script
+    assert build_script.index("$rootHash -ne $releaseHash") < build_script.index(
+        'Remove-Item -LiteralPath $DistStaging -Recurse -Force'
+    )
+    assert "V3.7 data-only desktop build created." in build_script
     assert build_script.index("snapshot_sqlite_database") < build_script.index(
-        'Set-Content -LiteralPath $ReleaseMarker'
+        'Set-Content -LiteralPath $RootMarker'
     )
-
-    audit_script = (project_root / "scripts" / "audit-v34-state.py").read_text(
-        encoding="utf-8"
-    )
-    assert "SUPPORTED_SCHEMA_VERSIONS = frozenset({20, 21, 22})" in audit_script
-    assert '"schema_version_supported"' in audit_script
-    assert '"schema_version_20"' not in audit_script

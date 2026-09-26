@@ -1,31 +1,31 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-from PyInstaller.utils.hooks import collect_all, collect_submodules
+from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
 
 
 webview_datas, webview_binaries, webview_hidden = collect_all("webview")
 hiddenimports = webview_hidden
 for package in ("uvicorn", "akshare", "exchange_calendars", "tushare"):
     hiddenimports += collect_submodules(package)
+akshare_datas = collect_data_files("akshare")
 
-# The V3.3 runtime is imported by the FastAPI application factory.  Keep its
-# production modules explicit so a future lazy import cannot silently produce
-# an EXE that starts but has no training/analysis endpoint.
+# The data-only FastAPI application and ETF replacement service are explicit so
+# the packaged desktop build contains the same chart/calendar workflow as the
+# source build.  Legacy model tables remain in SQLite for compatibility, but
+# their endpoints are blocked by the V3.7 runtime guard.
 hiddenimports += [
     "backend.web",
-    "backend.app.services.v33_analysis_service",
-    "backend.app.services.v33_data_service",
-    "backend.app.services.v33_feature_service",
-    "backend.app.services.v33_public_sources",
-    "backend.app.services.v33_runtime_service",
-    "backend.app.services.v33_training_service",
+    "backend.app.services.instrument_universe",
+    "backend.app.services.v351_slot_service",
+    "backend.app.services.indicator_service",
+    "backend.app.services.market_data",
 ]
 
 a = Analysis(
     ["desktop_launcher.py"],
     pathex=["."],
     binaries=webview_binaries,
-    datas=[("frontend/dist", "frontend/dist"), *webview_datas],
+    datas=[("frontend/dist", "frontend/dist"), *webview_datas, *akshare_datas],
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},

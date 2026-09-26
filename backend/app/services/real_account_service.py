@@ -49,7 +49,7 @@ from ..simulation.fees import FeeConfiguration, calculate_trade_fees
 ZERO = Decimal("0")
 EPSILON = Decimal("0.00000001")
 CSV_FIELDS = ("transaction_date", "instrument_code", "side", "price", "notes")
-INDEX_BY_ETF = {"589850": "000688", "159205": "399006", "159941": "NDX"}
+INDEX_BY_ETF = {"589850": "000688", "159915": "399006", "159941": "NDX"}
 
 
 class RealAccountNotFoundError(ValueError):

@@ -1,9 +1,69 @@
 # Project operating instructions
 
-The active model-core workflow is Investment Research **V3.4.1-13W**. Read
-`docs/V341_MODEL_PROTOCOL.md` completely before changing model-core,
-training, probability, scenario, reliability, or schema-21 code. V3.4.1 is a
-deterministic
+The active model-core workflow is Investment Research
+**V3.7_DEEPSEEK_FUSION_8W**. Read `docs/V37_OPTIMIZATION_PLAN.md` completely
+before changing model-core, training, probability, scenario, strategy,
+simulation-account, promotion, DeepSeek-AI, fusion, or schema-27 code.
+V3.7 runs a local multi-timeframe quant model and an independent DeepSeek
+analyst in parallel; DeepSeek only has prediction/proposal rights and can
+never bypass the local replay gate or modify frozen records.
+
+V3.7 is the only effective requirements and acceptance version. V3.5
+(`docs/V35_MODEL_PROTOCOL.md`), V3.5.1, and V3.6 remain as read-only frozen
+records; they are never modified. V3.7 appends `v37_*` tables (schema 29) and
+reuses `v35_*`/`v36_*` tables under its own `protocol_version`; it never
+overwrites, migrates, or reinterprets earlier records.
+
+## V3.7 model-core boundary
+
+- The active horizon is exactly 8 complete weeks; labels are
+  `Close_(T+k)/Close_T - 1` for `k = 1..8`.
+- Local models use weekly (52–104W) and daily (60–100D) branches plus
+  interaction features (`MULTI_TIMEFRAME_STATE`); an incomplete natural week
+  never leaks as a complete weekly bar.
+- DeepSeek calls are cached and frozen in `v37_ai_requests`/`v37_ai_forecasts`;
+  the same `(market, anchor, input_hash, model, prompt_version)` is never
+  re-called or overwritten; historical inputs are anonymized and
+  point-in-time audited.
+- Local/AI/Fusion accounts start from the same `v36_account_snapshots` row and
+  run through the same execution engine (T+1 shares, real costs, SELL,
+  pending-batch inheritance). AI never exceeds the 80% cap and never shorts.
+- AI raw confidence is stored as `ai_raw_score`; only calibrated
+  `ai_calibrated_probability` (matured Forward-OOS) enters fusion.
+- Fusion AI weight is capped by Forward-OOS windows: <16 shadow, 16–29 10%,
+  30–49 20%, 50–99 30%, ≥100 40%, with quality/account/participation gates.
+- Repair proposals only change whitelisted parameters; any
+  `LOCAL_REPAIR_CHALLENGER` must pass the local replay/promotion gates.
+- The production Bootstrap runs on the production database with idempotent
+  weekly transactions; test-database results are never copied into production.
+
+## V3.5 model-core boundary
+
+- The active horizon is exactly 8 complete weeks. Direction probabilities are
+  frozen at 4 and 8 weeks; no V3.5 page, API, table, or report may output
+  9–13 week or 12/13-week current results.
+- Labels are `Close_(T+k)/Close_T - 1` for `k = 1..8`; a forecast becomes
+  `FULLY_MATURE_8W` only after the full 8-week outcome is known.
+- The initial Champion is trained from scratch (399006 ≥24 matured 8W labels,
+  159941 ≥12 in the strongly regularized small-sample mode) and becomes
+  effective from the next complete week.
+- 399006 may use its own OHLCV, derived indicators, and approved valuation
+  fields. 159941 may use only its own OHLCV and derived indicators; NDX, FX,
+  NAV, premium/discount, and external valuation inputs are forbidden.
+- Strategy decisions use the DIF four-quadrant state and confirmation-state
+  position caps; `UNCONFIRMED` only lowers the cap and never forces 0%.
+- Champion promotion uses ≥8 sealed out-of-sample 8-week 100,000-CNY accounts
+  with real costs/slippage; no-action windows cannot be used as an advantage.
+- The production Bootstrap runs on the production database with idempotent
+  weekly transactions and resume-from-failure support; test-database results
+  are never copied into production.
+
+## V3.4.1 model-core boundary (historical reference)
+
+The V3.4.1-13W workflow (schema 21/22 tables, 13-week labels, 4/8/13 frozen
+probabilities) is preserved as read-only legacy. Read
+`docs/V341_MODEL_PROTOCOL.md` before changing schema-21 code for
+backward-compatibility audits. V3.4.1 is a deterministic
 local desktop/backend workflow. It does not call an Agent, LLM, Codex, OpenAI,
 Anthropic, or any external AI service at runtime.
 

@@ -21,6 +21,7 @@ type CalendarDay = {
 };
 
 const props = defineProps<{
+  instruments: Array<{ code: string; name: string; is_current_slot?: boolean }>;
   instrumentCode: ActiveInstrumentCode;
   events: PositionEvent[];
   positions: Partial<Record<ActiveInstrumentCode, number | null>>;
@@ -35,10 +36,19 @@ const props = defineProps<{
   deleteEvent: (id: number, symbol: ActiveInstrumentCode) => Promise<void>;
 }>();
 
-const instrumentNames: Record<ActiveInstrumentCode, string> = {
-  "399006": "创业板指数",
-  "159941": "广发纳斯达克100ETF",
-};
+const emit = defineEmits<{
+  (event: "instrument-change", code: ActiveInstrumentCode): void;
+}>();
+
+const instrumentNames = computed<Record<string, string>>(() => Object.fromEntries(
+  props.instruments.map(row => [row.code, row.name]),
+));
+const currentCodes = computed(() => props.instruments.filter(row => row.is_current_slot).map(row => row.code));
+const historyCodes = computed(() => [...new Set([
+  ...props.events.map(event => event.instrument_code),
+  ...Object.keys(props.positions).filter(code => props.positions[code] == null || props.positions[code] !== 0),
+])].filter(code => !currentCodes.value.includes(code)));
+const calendarCodes = computed(() => [...currentCodes.value, ...historyCodes.value]);
 const weekdayLabels = ["日", "一", "二", "三", "四", "五", "六"];
 
 const editingId = ref<number | null>(null);
@@ -57,6 +67,11 @@ const form = ref({
   change_percent: 5,
   note: "",
 });
+
+function selectInstrument(event: Event) {
+  const value = (event.target as HTMLSelectElement).value as ActiveInstrumentCode;
+  if (calendarCodes.value.includes(value)) emit("instrument-change", value);
+}
 
 const selectedPosition = computed(() => props.positions[props.instrumentCode] ?? null);
 const visibleMonthLabel = computed(() => `${visibleYear.value}年${visibleMonth.value + 1}月`);
@@ -98,6 +113,39 @@ const calendarDays = computed<CalendarDay[]>(() => {
 const selectedDateEvents = computed(() => sortEvents(
   eventGroups.value.get(selectedDate.value) ?? [],
   false,
+));
+const isLatestPositionView = computed(() => selectedDate.value === todayKey);
+const displayedPositions = computed<Partial<Record<ActiveInstrumentCode, number | null>>>(() => {
+  if (isLatestPositionView.value) return props.positions;
+
+  const snapshot: Partial<Record<ActiveInstrumentCode, number | null>> = Object.fromEntries(
+    calendarCodes.value.map((code) => [code, 0]),
+  );
+  for (const event of sortEvents(props.events, false)) {
+    if (event.operation_date > selectedDate.value) break;
+    if (!calendarCodes.value.includes(event.instrument_code)) continue;
+    const positionAfter = event.position_after == null ? NaN : Number(event.position_after);
+    snapshot[event.instrument_code] = Number.isFinite(positionAfter) ? positionAfter : null;
+  }
+  return snapshot;
+});
+const positionCards = computed(() => currentCodes.value.map((code) => ({
+  code,
+  name: instrumentNames.value[code] ?? code,
+  historical: !currentCodes.value.includes(code),
+  position: displayedPositions.value[code] ?? null,
+})));
+const totalPosition = computed(() => calendarCodes.value.some(code => displayedPositions.value[code] == null) ? null : calendarCodes.value.reduce(
+  (total, code) => total + Number(displayedPositions.value[code]),
+  0,
+));
+const positionSnapshotLabel = computed(() => (
+  isLatestPositionView.value ? "当前总仓位" : `截至 ${selectedDate.value} 的总仓位`
+));
+const positionSnapshotNote = computed(() => (
+  isLatestPositionView.value
+    ? "全部账本仓位（含历史标的）"
+    : "按所选日期及以前的记录重建"
 ));
 const sortedEvents = computed(() => sortEvents(props.events, true));
 const editingEvent = computed(() =>
@@ -227,6 +275,9 @@ function resetForm(keepSelectedDate = true) {
 
 function edit(event: PositionEvent) {
   editingId.value = event.id;
+  if (event.instrument_code !== props.instrumentCode) {
+    emit("instrument-change", event.instrument_code);
+  }
   selectDate(event.operation_date);
   form.value = {
     direction: event.direction,
@@ -257,7 +308,7 @@ async function save() {
   saving.value = true;
   localError.value = "";
   const values: PositionEventWrite = {
-    instrument_code: props.instrumentCode,
+    instrument_code: editingEvent.value?.instrument_code ?? props.instrumentCode,
     direction: form.value.direction,
     operation_date: form.value.operation_date,
     change_percent: change,
@@ -267,7 +318,7 @@ async function save() {
     if (editingId.value === null) {
       await props.createEvent(values);
     } else {
-      await props.updateEvent(editingId.value, values, props.instrumentCode);
+      await props.updateEvent(editingId.value, values, values.instrument_code);
     }
     selectDate(values.operation_date);
     resetForm();
@@ -287,7 +338,7 @@ async function remove(event: PositionEvent) {
   deletingId.value = event.id;
   localError.value = "";
   try {
-    await props.deleteEvent(event.id, props.instrumentCode);
+    await props.deleteEvent(event.id, event.instrument_code);
     if (editingId.value === event.id) resetForm();
   } catch (reason) {
     localError.value = reason instanceof Error ? reason.message : String(reason);
@@ -307,7 +358,8 @@ function dayAriaLabel(day: CalendarDay): string {
 
 watch(
   () => props.instrumentCode,
-  () => {
+  (code) => {
+    if (editingEvent.value?.instrument_code === code) return;
     selectedDate.value = todayKey;
     setVisibleMonthFromKey(todayKey);
     resetForm(false);
@@ -326,20 +378,40 @@ watch(
 <template>
   <section class="position-calendar" aria-labelledby="position-calendar-title">
     <header class="calendar-head">
-      <div>
-        <p class="kicker">POSITION CALENDAR · LOCAL SQLITE</p>
-        <h2 id="position-calendar-title">仓位投资日历</h2>
-        <p>在月历中记录两个标的的增仓或减仓百分比；历史记录修改后由本地账本按时间顺序重新计算。</p>
+      <div class="calendar-intro">
+        <div class="calendar-copy">
+          <p class="kicker">POSITION CALENDAR · LOCAL SQLITE</p>
+          <h2 id="position-calendar-title">仓位投资日历</h2>
+          <p>月历按日期汇总全部指数和 ETF 的仓位变化；右侧表单仍按当前标的录入，历史修改后由本地账本按时间顺序重新计算。</p>
+        </div>
+        <div
+          class="total-position"
+          :class="{ historical: !isLatestPositionView }"
+          :aria-label="positionSnapshotLabel"
+          data-testid="position-snapshot-summary"
+        >
+          <span data-testid="position-snapshot-label">{{ positionSnapshotLabel }}</span>
+          <b data-testid="total-position">{{ totalPosition == null || error ? '待核对' : `${totalPosition}%` }}</b>
+          <small>{{ positionSnapshotNote }}</small>
+        </div>
       </div>
-      <div class="position-totals" aria-label="当前仓位">
-        <div :class="{ active: instrumentCode === '399006' }">
-          <span>创业板指数</span>
-          <b>{{ positions["399006"] == null ? "0%" : `${positions["399006"]}%` }}</b>
-        </div>
-        <div :class="{ active: instrumentCode === '159941' }">
-          <span>广发纳指ETF</span>
-          <b>{{ positions["159941"] == null ? "0%" : `${positions["159941"]}%` }}</b>
-        </div>
+      <div
+        class="position-totals"
+        :aria-label="isLatestPositionView ? '当前持仓' : `${selectedDate} 历史持仓`"
+        :data-position-date="isLatestPositionView ? 'latest' : selectedDate"
+      >
+        <button type="button"
+          v-for="item in positionCards"
+          :key="item.code"
+          :class="{ active: instrumentCode === item.code, held: (item.position ?? 0) > 0 }"
+          :aria-pressed="instrumentCode === item.code"
+          @click="emit('instrument-change', item.code)"
+          :data-testid="`position-card-${item.code}`"
+        >
+          <span>{{ item.name }}</span>
+          <small>{{ item.code }}{{ item.historical ? ' · 历史标的' : '' }}</small>
+          <b>{{ item.position == null || error ? '—' : `${item.position}%` }}</b>
+        </button>
       </div>
     </header>
 
@@ -389,7 +461,7 @@ watch(
             <span v-if="day.increaseCount || day.decreaseCount" class="event-markers" aria-hidden="true">
               <i v-if="day.increaseCount" class="increase-marker"></i>
               <i v-if="day.decreaseCount" class="decrease-marker"></i>
-              <em v-if="day.increaseCount + day.decreaseCount > 2">
+              <em>
                 {{ day.increaseCount + day.decreaseCount }}
               </em>
             </span>
@@ -414,6 +486,10 @@ watch(
           </p>
           <ol v-else>
             <li v-for="event in selectedDateEvents" :key="event.id">
+              <span class="event-instrument">
+                <b>{{ instrumentNames[event.instrument_code] ?? event.instrument_code }}</b>
+                <small>{{ event.instrument_code }}</small>
+              </span>
               <span :class="['event-direction', event.direction]">
                 {{ event.direction === "increase" ? "增仓" : "减仓" }}
               </span>
@@ -429,11 +505,22 @@ watch(
       <form class="position-form" novalidate @submit.prevent="save">
         <p class="kicker">{{ editingId === null ? "NEW POSITION EVENT" : "EDIT POSITION EVENT" }}</p>
         <h3>{{ editingId === null ? "记录仓位变化" : "修改仓位记录" }}</h3>
-        <div class="selected-market">
-          <span>当前标的</span>
-          <strong>{{ instrumentNames[instrumentCode] }}</strong>
-          <em>{{ instrumentCode }}</em>
-        </div>
+        <label class="calendar-instrument-picker">
+          <span>选择仓位标的（指数 / ETF）</span>
+          <select
+            :value="instrumentCode"
+            data-testid="calendar-instrument"
+            @change="selectInstrument"
+          >
+            <optgroup label="当前ETF（交易策略顺序）">
+              <option v-for="code in currentCodes" :key="code" :value="code">{{ instrumentNames[code] ?? code }}（{{ code }}）</option>
+            </optgroup>
+            <optgroup v-if="historyCodes.length" label="历史标的（原记录保留）">
+              <option v-for="code in historyCodes" :key="code" :value="code">{{ instrumentNames[code] ?? code }}（{{ code }}）</option>
+            </optgroup>
+          </select>
+          <small>切换这里只影响录入表单和下方单标的完整历史；月历与“选中日期”始终显示全部标的记录。</small>
+        </label>
         <label>
           增仓或减仓
           <select v-model="form.direction" data-testid="position-direction">
@@ -462,8 +549,8 @@ watch(
           <textarea v-model="form.note" rows="3" maxlength="1000"></textarea>
         </label>
         <p class="position-preview" :class="{ invalid: previewInvalid }">
-          当前总仓位
-          <b data-testid="current-position">{{ selectedPosition == null ? "0%" : `${selectedPosition}%` }}</b>
+          当前标的仓位
+          <b data-testid="current-position">{{ selectedPosition == null || error ? "—" : `${selectedPosition}%` }}</b>
           <span aria-hidden="true">→</span>
           本次操作后估算
           <b>{{ previewPosition }}%</b>
@@ -475,7 +562,7 @@ watch(
             class="save-position"
             data-testid="position-submit"
             type="submit"
-            :disabled="saving || loading"
+            :disabled="saving || loading || !!error || selectedPosition == null"
           >
             {{ saving ? "保存中…" : editingId === null ? "保存仓位记录" : "保存修改" }}
           </button>
@@ -490,13 +577,13 @@ watch(
       <div class="ledger-heading">
         <div>
           <p class="kicker">COMPLETE AUDIT HISTORY</p>
-          <h3 id="position-history-title">{{ instrumentNames[instrumentCode] }}完整仓位历史</h3>
-        </div>
+           <h3 id="position-history-title">全部指数与 ETF 完整仓位历史</h3>
+         </div>
         <b>{{ events.length }} 条</b>
       </div>
       <div v-if="loading" class="ledger-empty">正在读取本地仓位记录…</div>
       <div v-else-if="!events.length" class="ledger-empty">
-        当前按清仓状态（0%）处理。选择月历日期后即可新增第一条记录。
+        当前没有任何指数或 ETF 的仓位记录。选择月历日期后即可新增第一条记录。
       </div>
       <ol v-else class="event-list">
         <li v-for="event in sortedEvents" :key="event.id" :data-testid="`position-event-${event.id}`">
@@ -504,6 +591,10 @@ watch(
             <time :datetime="event.operation_date">{{ event.operation_date }}</time>
             <small>同日顺序 {{ event.sequence ?? 1 }}</small>
           </div>
+          <span class="event-instrument ledger-instrument">
+            <b>{{ instrumentNames[event.instrument_code] ?? event.instrument_code }}</b>
+            <small>{{ event.instrument_code }}</small>
+          </span>
           <span :class="['event-direction', event.direction]">
             {{ event.direction === "increase" ? "增仓" : "减仓" }}
           </span>
@@ -533,30 +624,48 @@ watch(
 
 <style scoped>
 .position-calendar {
-  --calendar-bg: #f4f7fb;
-  --calendar-paper: #ffffff;
-  --calendar-ink: #172b3a;
-  --calendar-muted: #7a8792;
-  --calendar-blue: #0b67d7;
-  --calendar-red: #d9553f;
-  --calendar-teal: #14836d;
-  --calendar-rule: #d8e0e8;
+  --calendar-bg: #e9edf2;
+  --calendar-paper: #f4f6f8;
+  --calendar-ink: #263445;
+  --calendar-muted: #657184;
+  --calendar-accent: var(--selected);
+  --calendar-red: #d64b4b;
+  --calendar-teal: #27845a;
+  --calendar-rule: #d5dce5;
   margin-top: 16px;
-  border: 1px solid #b9c4ce;
+  border: 1px solid #d5dce5;
   color: var(--calendar-ink);
   background: var(--calendar-bg);
-  box-shadow: 0 14px 38px rgba(23, 43, 58, .08);
+  box-shadow: 0 14px 38px rgba(38, 52, 69, .04);
 }
 
 .calendar-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 24px;
-  align-items: flex-end;
-  padding: 24px;
-  border-bottom: 1px solid #b9c4ce;
+  display: grid;
+  gap: 16px;
+  padding: 20px 24px;
+  border-bottom: 1px solid #d5dce5;
   background: var(--calendar-paper);
 }
+
+.calendar-intro {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 210px;
+  gap: 24px;
+  align-items: center;
+}
+.calendar-copy { min-width: 0; }
+.total-position {
+  padding: 13px 16px;
+  border-left: 4px solid var(--calendar-accent);
+  color: #fff;
+  background: var(--calendar-ink);
+}
+.total-position span,
+.total-position small { display: block; }
+.total-position span { font-size: 12px; font-weight: 800; letter-spacing: .08em; }
+.total-position b { display: block; margin: 3px 0 2px; font: 700 30px Georgia, serif; }
+.total-position small { color: rgba(244, 246, 248, .7); font-size: 11px; }
+.total-position.historical { border-left-color: #a57738; }
 
 .calendar-head h2,
 .month-toolbar h3,
@@ -569,19 +678,21 @@ watch(
 }
 
 .calendar-head h2 { font-size: 30px; }
-.calendar-head > div > p:not(.kicker) { margin: 8px 0 0; color: var(--calendar-muted); font-size: 14px; }
-.position-totals { display: grid; grid-template-columns: repeat(2, minmax(150px, 1fr)); border: 1px solid #b9c4ce; }
-.position-totals div { padding: 10px 14px; border-left: 1px solid #b9c4ce; }
-.position-totals div:first-child { border-left: 0; }
-.position-totals div.active { color: #fff; background: var(--calendar-ink); }
+.calendar-copy > p:not(.kicker) { margin: 8px 0 0; color: var(--calendar-muted); font-size: 14px; }
+.position-totals { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; border: 1px solid #d5dce5; border-radius: 8px; padding: 6px; background: #e9edf2; }
+.position-totals button { min-width: 0; padding: 12px 14px; background: var(--calendar-paper); border: 2px solid transparent; color: var(--calendar-ink); text-align: left; cursor: pointer; }
+.position-totals button.held { background: #e7edf3; }
+.position-totals button.active { border-color: var(--selected); background: #e2ebf5; box-shadow: none; }
+.position-totals button:focus-visible { outline: 3px solid var(--selected); outline-offset: -3px; }
+.position-totals small { font-size: 11px; color: #657184; }
 .position-totals span { display: block; color: inherit; opacity: .72; font-size: 12px; }
-.position-totals b { display: block; margin-top: 5px; font: 700 22px Georgia, serif; }
+.position-totals b { display: block; margin-top: 3px; font-size: 22px; font-variant-numeric: tabular-nums; }
 
 .calendar-workspace {
   display: grid;
   grid-template-columns: minmax(480px, 1.15fr) minmax(330px, .85fr);
   gap: 1px;
-  background: #b9c4ce;
+  background: #d5dce5;
 }
 .month-panel,
 .position-form { min-width: 0; background: var(--calendar-paper); }
@@ -598,26 +709,26 @@ watch(
   place-items: center;
   border: 1px solid transparent;
   border-radius: 50%;
-  color: #53606b;
+  color: #657184;
   background: transparent;
   font-size: 24px;
   line-height: 1;
 }
 .month-actions .today-action { width: auto; padding: 0 10px; border-radius: 7px; font-size: 12px; font-weight: 800; }
-.month-actions button:hover { border-color: var(--calendar-rule); background: #f3f6fa; }
+.month-actions button:hover { border-color: var(--calendar-rule); background: #e2ebf5; }
 .month-actions button:focus-visible,
 .calendar-day:focus-visible,
 .position-form :is(input, select, textarea, button):focus-visible,
 .event-actions button:focus-visible,
 .selected-events button:focus-visible {
-  outline: 3px solid rgba(11, 103, 215, .3);
+  outline: 3px solid rgba(102, 132, 167, .5);
   outline-offset: 2px;
 }
 
 .weekday-row,
 .month-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
 .weekday-row { margin-top: 17px; }
-.weekday-row span { padding: 8px 0; color: #53606b; text-align: center; font-size: 12px; font-weight: 800; }
+.weekday-row span { padding: 8px 0; color: #657184; text-align: center; font-size: 12px; font-weight: 800; }
 .month-grid { gap: 4px; }
 .calendar-day {
   position: relative;
@@ -632,81 +743,94 @@ watch(
   font-size: 13px;
   transition: color .15s ease, background-color .15s ease, transform .15s ease;
 }
-.calendar-day:hover { background: #eef4fb; transform: translateY(-1px); }
+.calendar-day:hover { background: #e2ebf5; transform: translateY(-1px); }
 .calendar-day.adjacent { color: #a5afb8; }
 .calendar-day.today:not(.selected) .day-number::after {
   position: absolute;
   inset: -7px;
-  border: 1.5px solid var(--calendar-blue);
+  border: 1.5px solid var(--calendar-accent);
   border-radius: 50%;
   content: "";
   pointer-events: none;
 }
 .calendar-day.selected { color: var(--calendar-ink); background: transparent; box-shadow: none; }
-.calendar-day.selected .day-number { display: grid; width: 32px; height: 32px; place-items: center; border-radius: 50%; color: #fff; background: var(--calendar-blue); box-shadow: 0 5px 12px rgba(11, 103, 215, .22); }
+.calendar-day.selected .day-number { display: grid; width: 32px; height: 32px; place-items: center; border-radius: 50%; color: var(--calendar-ink); background: #e2ebf5; border: 1px solid var(--calendar-accent); box-shadow: none; }
 .day-number { position: relative; z-index: 1; }
 .event-markers { position: absolute; bottom: 6px; left: 50%; display: flex; align-items: center; gap: 3px; transform: translateX(-50%); }
 .event-markers i,
 .calendar-legend i { display: block; width: 6px; height: 6px; border-radius: 50%; }
 .increase-marker { background: var(--calendar-red); }
 .decrease-marker { background: var(--calendar-teal); }
-.calendar-day.selected .event-markers em { color: var(--calendar-blue); }
+.calendar-day.selected .event-markers em { color: var(--calendar-accent); }
 .event-markers em { color: currentColor; font-size: 8px; font-style: normal; font-weight: 900; }
 .calendar-legend { display: flex; justify-content: flex-end; gap: 15px; margin-top: 13px; color: var(--calendar-muted); font-size: 11px; }
 .calendar-legend span { display: flex; align-items: center; gap: 5px; }
-.calendar-legend .today-key i { border: 1.5px solid var(--calendar-blue); background: transparent; }
+.calendar-legend .today-key i { border: 1.5px solid var(--calendar-accent); background: transparent; }
 
 .selected-events { margin-top: 18px; border: 1px solid var(--calendar-rule); border-radius: 10px; overflow: hidden; }
-.selected-events-heading { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; background: #f4f7fb; }
+.selected-events-heading { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; background: #e9edf2; }
 .selected-events-heading span { color: var(--calendar-muted); font-size: 11px; }
 .selected-events h4 { margin-top: 2px; font-size: 17px; }
-.selected-events-heading > b { color: var(--calendar-blue); }
+.selected-events-heading > b { color: var(--calendar-accent); }
 .selected-empty { margin: 0; padding: 19px 14px; color: var(--calendar-muted); font-size: 13px; }
 .selected-events ol { margin: 0; padding: 0; list-style: none; }
-.selected-events li { display: grid; grid-template-columns: 52px 50px minmax(92px, 1fr) 55px auto; gap: 9px; align-items: center; padding: 10px 13px; border-top: 1px solid var(--calendar-rule); font-size: 12px; }
+.selected-events li { display: grid; grid-template-columns: minmax(130px, 1.35fr) 52px 50px minmax(92px, 1fr) 55px auto; gap: 9px; align-items: center; padding: 10px 13px; border-top: 1px solid var(--calendar-rule); font-size: 12px; }
+.event-instrument { display: grid; min-width: 0; gap: 2px; }
+.event-instrument b { overflow: hidden; color: var(--calendar-ink); text-overflow: ellipsis; white-space: nowrap; }
+.event-instrument small { color: var(--calendar-muted); font-variant-numeric: tabular-nums; }
 .selected-events li > small { color: var(--calendar-muted); }
-.selected-events li > button { padding: 5px 8px; border: 1px solid var(--calendar-rule); border-radius: 5px; color: var(--calendar-blue); background: #fff; font-weight: 800; }
+.selected-events li > button { padding: 5px 8px; border: 1px solid var(--calendar-rule); border-radius: 5px; color: var(--calendar-accent); background: #f4f6f8; font-weight: 800; }
 
 .position-form h3 { margin-bottom: 18px; font-size: 24px; }
-.position-form label { display: block; margin-top: 13px; color: #596873; font-size: 13px; font-weight: 700; }
+.position-form label { display: block; margin-top: 13px; color: #657184; font-size: 13px; font-weight: 700; }
 .position-form input,
 .position-form select,
-.position-form textarea { width: 100%; margin-top: 6px; padding: 10px 11px; border: 1px solid #b9c4ce; border-radius: 6px; color: var(--calendar-ink); background: #fff; font-size: 15px; }
+.position-form textarea { width: 100%; margin-top: 6px; padding: 10px 11px; border: 1px solid #d5dce5; border-radius: 6px; color: var(--calendar-ink); background: #fafbfc; font-size: 15px; }
 .position-form textarea { resize: vertical; }
+.calendar-instrument-picker {
+  margin: 0 0 14px !important;
+  padding: 12px;
+  border: 1px solid #d5dce5;
+  border-radius: 7px;
+  background: #e9edf2;
+}
+.calendar-instrument-picker span { display: block; color: var(--calendar-ink); font-size: 13px; font-weight: 900; }
+.calendar-instrument-picker small { display: block; margin-top: 7px; color: var(--calendar-muted); font-size: 11px; line-height: 1.45; }
 .selected-market { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; padding: 12px; border-radius: 7px; color: #fff; background: var(--calendar-ink); }
 .selected-market span { grid-column: 1 / -1; color: #b8c2c7; font-size: 12px; }
 .selected-market em { font-style: normal; font-weight: 800; }
-.position-preview { padding: 12px; border-left: 4px solid var(--calendar-blue); background: #eaf2fc; color: #596873; font-size: 13px; line-height: 1.7; }
+.position-preview { padding: 12px; border-left: 4px solid var(--calendar-accent); background: #e2ebf5; color: #657184; font-size: 13px; line-height: 1.7; }
 .position-preview.invalid { border-color: var(--calendar-red); background: #f9ece8; }
 .position-preview b { color: var(--calendar-ink); font-size: 17px; }
-.position-preview span { margin: 0 6px; color: var(--calendar-blue); }
+.position-preview span { margin: 0 6px; color: var(--calendar-accent); }
 .replay-note { margin: -4px 0 0; color: var(--calendar-muted); font-size: 11px; line-height: 1.55; }
 .form-error { margin-top: 12px; padding: 10px; color: #9b352a; background: #f8e9e4; font-size: 13px; }
 .form-actions { display: flex; gap: 8px; margin-top: 14px; }
 .save-position,
 .cancel-edit { padding: 11px 15px; border: 1px solid var(--calendar-ink); border-radius: 6px; font-weight: 900; }
-.save-position { color: #fff; background: var(--calendar-blue); border-color: var(--calendar-blue); }
+.save-position { color: #fff; background: var(--action); border-color: var(--action); }
 .save-position:disabled { cursor: not-allowed; opacity: .55; }
 .cancel-edit { color: var(--calendar-ink); background: transparent; }
 
-.event-ledger { border-top: 1px solid #b9c4ce; background: var(--calendar-paper); }
+.event-ledger { border-top: 1px solid #d5dce5; background: var(--calendar-paper); }
 .ledger-heading { display: flex; justify-content: space-between; gap: 16px; padding: 20px 22px 14px; border-bottom: 1px solid var(--calendar-rule); }
 .ledger-heading h3 { font-size: 24px; }
-.ledger-heading > b { color: var(--calendar-blue); font-size: 18px; }
+.ledger-heading > b { color: var(--calendar-accent); font-size: 18px; }
 .ledger-empty { display: grid; min-height: 160px; place-items: center; padding: 24px; color: var(--calendar-muted); text-align: center; }
 .event-list { max-height: 460px; margin: 0; padding: 0; overflow: auto; list-style: none; }
-.event-list li { display: grid; grid-template-columns: 108px 54px 60px 110px minmax(100px, 1fr) auto; gap: 13px; align-items: center; padding: 14px 20px; border-bottom: 1px solid #e3e9ee; }
+.event-list li { display: grid; grid-template-columns: 108px minmax(140px, 1.1fr) 54px 60px 110px minmax(100px, 1fr) auto; gap: 13px; align-items: center; padding: 14px 20px; border-bottom: 1px solid #e3e9ee; }
+.ledger-instrument b { font-size: 13px; }
 .event-date time { display: block; font-weight: 800; }
 .event-date small,
 .position-after span { color: var(--calendar-muted); font-size: 11px; }
 .event-direction { padding: 5px 7px; border-radius: 4px; color: #fff; text-align: center; font-size: 12px; font-weight: 900; }
-.event-direction.increase { background: var(--calendar-red); }
-.event-direction.decrease { background: var(--calendar-teal); }
+.event-direction.increase { color: var(--up-label); background: var(--up-tint); }
+.event-direction.decrease { color: var(--down-label); background: var(--down-tint); }
 .position-after span,
 .position-after b { display: block; }
 .event-list p { margin: 0; overflow: hidden; color: var(--calendar-muted); text-overflow: ellipsis; white-space: nowrap; }
 .event-actions { display: flex; gap: 5px; }
-.event-actions button { padding: 6px 8px; border: 1px solid #b9c4ce; border-radius: 5px; color: var(--calendar-ink); background: transparent; }
+.event-actions button { padding: 6px 8px; border: 1px solid #d5dce5; border-radius: 5px; color: var(--calendar-ink); background: transparent; }
 
 @media (prefers-reduced-motion: reduce) {
   .calendar-day { transition: none; }
@@ -714,27 +838,27 @@ watch(
 
 @media (max-width: 980px) {
   .calendar-workspace { grid-template-columns: 1fr; }
-  .month-panel { border-bottom: 1px solid #b9c4ce; }
+  .month-panel { border-bottom: 1px solid #d5dce5; }
 }
 
 @media (max-width: 720px) {
   .calendar-head { display: block; }
+  .calendar-intro { display: block; }
+  .total-position { margin-top: 14px; }
   .position-totals { margin-top: 16px; grid-template-columns: 1fr 1fr; }
   .position-totals div { min-width: 0; }
   .month-panel { padding: 18px 10px; }
   .calendar-day { min-height: 48px; }
   .selected-events li { grid-template-columns: 48px 44px 1fr auto; }
   .selected-events li > small { display: none; }
-  .event-list li { grid-template-columns: 88px 52px 1fr; }
+  .event-list li { grid-template-columns: 88px minmax(120px, 1fr) 52px; }
   .position-after,
   .event-list p,
-  .event-actions { grid-column: 3; }
+  .event-actions { grid-column: 2 / -1; }
 }
 
 @media (max-width: 460px) {
   .position-totals { grid-template-columns: 1fr; }
-  .position-totals div { border-left: 0; border-top: 1px solid #b9c4ce; }
-  .position-totals div:first-child { border-top: 0; }
   .month-toolbar h3 { font-size: 19px; }
   .month-actions button { width: 34px; height: 34px; }
   .month-actions .today-action { display: none; }
